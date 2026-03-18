@@ -1,0 +1,95 @@
+\documentclass[a4paper]{article}
+\usepackage{geometry}
+\geometry{left=2cm, right=2cm, top=1.8cm, bottom=1.8cm}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{titlesec}
+\usepackage{fontenc}
+\usepackage{mathptmx}
+\usepackage{setspace}
+\usepackage{xcolor}
+\usepackage{fontawesome5}
+\usepackage[UTF8]{ctex}
+\definecolor{githubblue}{HTML}{1f2328}
+
+\setlength{\parindent}{0pt}
+\setlist{nosep, left=0pt, labelindent=0pt, labelwidth=0pt, labelsep=0pt, itemsep=1pt}
+\titleformat{\section}{\large\bfseries\uppercase}{}{0em}{}[\titlerule]
+\titlespacing*{\section}{0pt}{1.2ex}{1.2ex}
+
+\begin{document}
+
+% === 标题 ===
+\begin{center}
+    \Huge \textbf{付卓然} \\[0.3cm]
+    \normalsize 前端开发 / AI 应用研发工程师 \\
+    \small +86 15511850755 \quad \href{mailto:1252738357@qq.com}{1252738357@qq.com} \quad \href{https://github.com/Jason-blips}{\color{githubblue}\faGithub\ Jason-blips}
+\end{center}
+\vspace{-0.3cm}
+
+% === 教育经历 ===
+\section{教育经历}
+\textbf{约克大学} \hfill 本科 · 理学学士 - 计算机科学（2024.09 -- 至今）
+\begin{itemize}
+    \item \textbf{学业成绩}: GPA 3.7/4.0 \hfill \textbf{专业排名}: 59/314
+    \item \textbf{核心课程}: 软件与系统工程、机器学习与优化 (IMLO)、数据科学导论、高级计算机系统、操作系统安全与网络、可计算性、复杂性与逻辑
+    \item \textbf{校内荣誉}: 华为2024 UK Tech Arena 编程挑战赛（Track 1）——决赛入围
+\end{itemize}
+\vspace{0.2cm}
+
+% === 项目经历 ===
+\section{项目经历}
+
+\begin{itemize}[leftmargin=0pt, itemsep=8pt, label={}]
+\item
+  \textbf{Counting Helper}：\textit{智能记账与 LLM 分析 Web 应用}
+  \hfill \href{https://github.com/Jason-blips/counting-helper}{\texttt{github.com/Jason-blips/counting-helper}}\\[2pt]
+  \textbf{项目需求：}每日收支记录、多支付方式与多货币；交易查询与统计；\textbf{AI 消费分析与省钱建议}；用户系统与管理员汇总。\\
+  \textbf{负责内容：}\textbf{React + TypeScript} 实现登录注册、交易表单与记录分页，Axios（Ajax）对接 REST 接口、多条件筛选与统计；集成 \textbf{OpenAI API}，\textbf{Prompt 设计与优化}、接口封装与 \textbf{结构化输出}，减少幻觉、错误重试；Node.js + Express 后端与 SQLite 存储优化；日常使用 \textbf{Cursor / AI 辅助} 提升开发效率。\\
+  \textbf{项目技术栈：}React \;+\; TypeScript \;+\; OpenAI API \;+\; Node.js \;+\; Express \;+\; SQLite
+\end{itemize}
+\vspace{0.2cm}
+
+\begin{itemize}[leftmargin=0pt, itemsep=8pt, label={}]
+\item
+  \textbf{RAG 检索问答 / 学习助教}：\textit{基于检索增强的 LLM 问答系统}
+  \hfill \href{https://github.com/Jason-blips}{\texttt{github.com/Jason-blips}}\\[2pt]
+  \textbf{项目需求：}对本地文档进行语义检索，并基于检索结果由 LLM 生成有依据的答案，避免无依据编造。\\
+  \textbf{负责内容：}构建向量库（Embedding + 持久化），实现 \textbf{RAG} 检索流程；\textbf{Prompt 设计}（系统提示约束“依据资料作答、资料不足时明确说明”），调用阿里云 DashScope/Qwen 生成回答并 \textbf{引用段落依据}；Python 实现检索与调用链路，支持 CLI 与 Web 交互。\\
+  \textbf{项目技术栈：}RAG \;+\; 向量检索 \;+\; DashScope/Qwen \;+\; Python \;+\; Prompt Engineering
+\end{itemize}
+\vspace{0.2cm}
+
+\begin{itemize}[leftmargin=0pt, itemsep=8pt, label={}]
+\item
+  \textbf{Health Punch}：\textit{疫情健康打卡 Web 应用}
+  \hfill \href{https://github.com/Jason-blips/health-punch}{\texttt{github.com/Jason-blips/health-punch}}\\[2pt]
+  \textbf{项目需求：}每日健康与位置打卡、记录查询及管理员汇总。\\
+  \textbf{负责内容：}\textbf{Vue.js + Element UI} 实现登录注册、打卡表单与记录分页，符合 \textbf{Web 标准}与可用性；集成百度地图 API（地址联想、地理编码、选点定位）；Axios 对接 REST 接口、多条件筛选；管理员端筛选与分页；\textbf{Webpack} 开发与生产构建，代码托管 \textbf{GitHub}。\\
+  \textbf{项目技术栈：}Vue.js \;+\; Element UI \;+\; Vue Router \;+\; 百度地图 API \;+\; Axios \;+\; Webpack
+\end{itemize}
+\vspace{0.2cm}
+
+% === 其他荣誉 ===
+\section{其他荣誉}
+\begin{itemize}
+  \item \textbf{Kaggle} 机器学习竞赛（5+ 公开赛）—— 全球排名前 1000
+  \item \textbf{剑桥化学挑战赛}（C3L6）—— 铜奖
+  \item \textbf{新加坡数学奥林匹克}（SMO）—— 金奖
+  \item \textbf{英国物理奥林匹克}（BPhO）—— 银奖
+\end{itemize}
+\vspace{0.2cm}
+
+% === 专业技能 ===
+\section{专业技能}
+\begin{itemize}
+    \item \textbf{前端开发：} HTML5、CSS3、JavaScript/ES6+；React + TypeScript、Vue.js、Vue Router、\textbf{Element UI}、Axios、\textbf{Webpack} 开发与生产构建；理解 Web 标准、可用性与可访问性
+
+    \item \textbf{AI 应用与 LLM：} \textbf{Prompt Engineering} 与优化、\textbf{RAG} 检索增强、LLM 能力与边界；OpenAI API / DashScope 集成，结构化输出与幻觉控制；\textbf{Cursor}、通义灵码等 AI 辅助编程；机器学习与优化课程、Kaggle 竞赛（全球前 1000）
+
+    \item \textbf{编程语言与后端：} TypeScript、Python、Java、C++；Node.js、Express、RESTful API、JWT、RBAC；算法与数据结构（课程与竞赛）
+
+    \item \textbf{数据库与工程：} SQLite、MySQL（表结构、索引、分页）；Git、Docker、Gradle、Linux；JUnit 5 单元测试、Lint/静态检查
+\end{itemize}
+
+\end{document}
