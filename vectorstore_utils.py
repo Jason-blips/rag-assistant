@@ -27,6 +27,103 @@ RRF_K = 60  # Reciprocal Rank Fusion 常数
 DEFAULT_RERANKER_MODEL_NAME = "BAAI/bge-reranker-base"
 
 
+def infer_topic(text: str, *, block_type: str | None = None) -> str:
+    """
+    轻量启发式：根据文本内容推断属于哪个知识模块。
+
+    该函数用于：
+    - 构建向量库时给 chunk 写入 topic 元数据
+    - 检索时根据用户问题推断 topic_preference 并偏置候选
+    """
+    s = (text or "").strip()
+    if not s:
+        return "general"
+
+    lower = s.lower()
+
+    # block_type 直接给一些先验（例如 code/table）
+    if block_type == "code":
+        return "code"
+    if block_type == "table":
+        return "table"
+
+    def _has_any(keywords: list[str]) -> int:
+        return sum(1 for k in keywords if k in lower)
+
+    # 依据课程常见内容做关键词计分
+    uml_score = _has_any(
+        [
+            "uml",
+            "class diagram",
+            "类图",
+            "association",
+            "inheritance",
+            "generalization",
+            "aggregation",
+            "composition",
+            "interface",
+            "multiplicity",
+            "object oriented",
+        ]
+    )
+    sql_score = _has_any(
+        [
+            "select",
+            "from",
+            "where",
+            "join",
+            "group by",
+            "order by",
+            "create table",
+            "insert",
+            "update",
+            "delete",
+            "primary key",
+            "foreign key",
+            "sql",
+            "数据库",
+            "表",
+        ]
+    )
+    er_score = _has_any(
+        [
+            "er",
+            "entity",
+            "relationship",
+            "实体",
+            "关系",
+            "实体-关系",
+        ]
+    )
+    algo_score = _has_any(
+        [
+            "algorithm",
+            "algorithms",
+            "time complexity",
+            "space complexity",
+            "big o",
+            "big-o",
+            "o(",
+            "o ",
+            "复杂度",
+            "渐进",
+            "big",
+        ]
+    )
+
+    # 兜底：取最高分
+    scores = {
+        "uml": uml_score,
+        "sql": sql_score,
+        "er": er_score,
+        "algorithm": algo_score,
+    }
+    topic = max(scores, key=scores.__getitem__)
+    if scores[topic] <= 0:
+        return "general"
+    return topic
+
+
 def get_embeddings(model_name: Optional[str] = None) -> HuggingFaceEmbeddings:
     """
     创建并返回 HuggingFaceEmbeddings。
@@ -117,6 +214,8 @@ def hybrid_retrieve(
     vector_weight: float = DEFAULT_VECTOR_WEIGHT,
     use_reranker: bool = True,
     reranker_model: str = DEFAULT_RERANKER_MODEL_NAME,
+    topic_preference: str | None = None,
+    topic_mismatch_weight: float = 0.3,
 ) -> tuple[list[Document], list[float]]:
     """
     BM25 关键词 + 向量语义双路检索，RRF 融合，可选 Cross-Encoder 精排。
@@ -143,14 +242,28 @@ def hybrid_retrieve(
     rrf_scores: dict[str, float] = {}
     doc_map: dict[str, Document] = {}
 
+    def _topic_factor(doc: Document) -> float:
+        if not topic_preference:
+            return 1.0
+        md = getattr(doc, "metadata", None) or {}
+        # 会话记忆要始终参与检索偏置；否则对话上下文容易被“topic”误伤。
+        if md.get("doc_type") == "conversation":
+            return 1.0
+        doc_topic = md.get("topic")
+        return 1.0 if doc_topic == topic_preference else topic_mismatch_weight
+
     for rank, (doc, _score) in enumerate(vector_pairs):
         key = doc.page_content
-        rrf_scores[key] = rrf_scores.get(key, 0.0) + vector_weight / (RRF_K + rank + 1)
+        rrf_scores[key] = rrf_scores.get(key, 0.0) + (
+            vector_weight * _topic_factor(doc) / (RRF_K + rank + 1)
+        )
         doc_map.setdefault(key, doc)
 
     for rank, (doc, _score) in enumerate(bm25_pairs):
         key = doc.page_content
-        rrf_scores[key] = rrf_scores.get(key, 0.0) + bm25_weight / (RRF_K + rank + 1)
+        rrf_scores[key] = rrf_scores.get(key, 0.0) + (
+            bm25_weight * _topic_factor(doc) / (RRF_K + rank + 1)
+        )
         doc_map.setdefault(key, doc)
 
     # RRF 粗排：取足够多的候选送给 reranker
@@ -402,7 +515,21 @@ def get_text_chunks_from_pdf(
         for block_type, block_text in blocks:
             for chunk_text in _split_block_text(block_text, block_type):
                 if chunk_text.strip():
-                    docs.append(Document(page_content=chunk_text, metadata=base_meta))
+                    topic = infer_topic(
+                        chunk_text,
+                        block_type=block_type,
+                    )
+                    meta = dict(base_meta)
+                    meta.update(
+                        {
+                            "doc_type": "kb",
+                            "topic": topic,
+                            "block_type": block_type,
+                        }
+                    )
+                    docs.append(
+                        Document(page_content=chunk_text, metadata=meta)
+                    )
 
     return docs
 

@@ -6,6 +6,7 @@ from vectorstore_utils import (
     DEFAULT_COLLECTION_NAME,
     DEFAULT_EMBEDDING_MODEL_NAME,
     DEFAULT_PERSIST_DIR,
+    infer_topic,
     hybrid_retrieve,
     load_vectorstore,
 )
@@ -71,11 +72,13 @@ def _retrieve(
     如果 BM25 语料不可用则退化到纯向量检索。
     返回 (docs, scores?)，scores 若不可用则为 None。
     """
+    topic_preference = infer_topic(question)
     try:
         return hybrid_retrieve(
             db=db, query=question, k=k,
             persist_directory=persist_dir,
             use_reranker=use_reranker,
+            topic_preference=topic_preference,
         )
     except FileNotFoundError:
         pass
@@ -84,6 +87,15 @@ def _retrieve(
         pairs = db.similarity_search_with_relevance_scores(question, k=k)
         docs = [d for d, _ in pairs]
         scores = [s for _, s in pairs]
+        if topic_preference:
+            matched: list[tuple[Any, float]] = []
+            for d, s in zip(docs, scores):
+                doc_topic = (getattr(d, "metadata", None) or {}).get("topic")
+                if doc_topic == topic_preference:
+                    matched.append((d, s))
+            if matched:
+                docs = [d for d, _ in matched][:k]
+                scores = [s for _, s in matched][:k]
         return docs, scores
     except Exception:
         retriever = db.as_retriever(search_kwargs={"k": k})
