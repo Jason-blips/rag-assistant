@@ -6,6 +6,7 @@ chromadb
 sentence-transformers
 dashscope
 gradio
+pypdf
 rank_bm25
 jieba
 
