@@ -124,6 +124,119 @@ def infer_topic(text: str, *, block_type: str | None = None) -> str:
     return topic
 
 
+def compute_course_match_score(question: str) -> tuple[float, str]:
+    """
+    计算“问题与课程课件的匹配度”，用于决定是否触发向量检索上下文。
+
+    返回：
+    - match_score: 0~1
+    - inferred_topic: infer_topic(question) 的结果
+    """
+    s = (question or "").strip()
+    if not s:
+        return 0.0, "general"
+
+    lower = s.lower()
+    topic = infer_topic(s)
+
+    # 学术/计算机课程常见信号词：用于在 topic="general" 时仍能给出匹配度
+    academic_keywords = [
+        "algorithm",
+        "algorithms",
+        "complexity",
+        "time complexity",
+        "space complexity",
+        "big o",
+        "big-o",
+        "o(",
+        "o ",
+        "复杂度",
+        "算法",
+        "渐进",
+        "证明",
+        "定理",
+        "引理",
+        "推导",
+        "评分",
+        "作业",
+        "标准",
+        "rubric",
+        "assignment",
+        "exam",
+        "考试",
+        "题目",
+    ]
+
+    topic_keywords: dict[str, list[str]] = {
+        "uml": [
+            "uml",
+            "类图",
+            "association",
+            "inheritance",
+            "generalization",
+            "aggregation",
+            "composition",
+            "interface",
+            "multiplicity",
+            "object oriented",
+        ],
+        "sql": [
+            "sql",
+            "select",
+            "from",
+            "where",
+            "join",
+            "group by",
+            "order by",
+            "create table",
+            "insert",
+            "update",
+            "delete",
+            "database",
+            "表",
+        ],
+        "er": [
+            "er",
+            "entity",
+            "relationship",
+            "实体",
+            "关系",
+        ],
+        "algorithm": [
+            "algorithm",
+            "complexity",
+            "time complexity",
+            "space complexity",
+            "big o",
+            "big-o",
+            "复杂度",
+            "算法",
+        ],
+    }
+
+    def _count_hits(keys: list[str]) -> int:
+        hits = 0
+        for k in keys:
+            if k in lower:
+                hits += 1
+        return hits
+
+    hit_academic = _count_hits(academic_keywords)
+
+    if topic != "general":
+        keys = topic_keywords.get(topic, [])
+        hit_topic = _count_hits(keys)
+        # topic 检测已命中至少一个关键词：给一个“底线分”，否则 hit=1 时会过于苛刻。
+        base = 0.3
+        extra = (max(0, hit_topic - 1) / 4) * 0.7
+        match_score = min(1.0, base + extra)
+        return match_score, topic
+
+    # topic="general"：只靠学术信号词打分
+    match_score = min(1.0, hit_academic / 5)
+    return match_score, topic
+
+
 def get_embeddings(model_name: Optional[str] = None) -> HuggingFaceEmbeddings:
     """
     创建并返回 HuggingFaceEmbeddings。
