@@ -181,18 +181,228 @@ def get_text_chunks_from_pdf(
     if not pdf_path.exists():
         raise FileNotFoundError(f"未找到 PDF 文件: {pdf_path.resolve()}")
 
+    def _cjk_count(s: str) -> int:
+        import re
+
+        return len(re.findall(r"[\u4e00-\u9fff]", s))
+
+    def _is_code_line(line: str) -> bool:
+        s = line.strip()
+        if not s:
+            return False
+        code_markers = [
+            "```",
+            "{",
+            "}",
+            ";",
+            "->",
+            "=>",
+            "SELECT",
+            "FROM",
+            "WHERE",
+            "CREATE",
+            "DROP",
+            "JOIN",
+            "GROUP BY",
+            "ORDER BY",
+            "class ",
+            "def ",
+            "import ",
+            "public ",
+            "private ",
+            "void ",
+            "int ",
+            "float ",
+            "return ",
+            "==",
+            "!=",
+            "<=",
+            ">=",
+        ]
+        s_upper = s.upper()
+        if any(m in s for m in code_markers):
+            return True
+        if any(m in s_upper for m in code_markers if m.isupper()):
+            return True
+        # 代码块常见缩进
+        if line.startswith(("    ", "\t")):
+            return True
+        return False
+
+    def _is_table_line(line: str) -> bool:
+        s = line.strip()
+        if not s:
+            return False
+        if "|" in s:
+            return True
+        import re
+
+        # 连续多空格常见于 PDF 导出的表格列
+        if re.search(r"\s{2,}", line) is not None:
+            parts = [p for p in re.split(r"\s{2,}", s) if p.strip()]
+            return len(parts) >= 3
+        return False
+
+    def _is_heading_line(line: str) -> bool:
+        s = line.strip()
+        if not s:
+            return False
+        if _is_code_line(s) or _is_table_line(s):
+            return False
+        # Markdown 标题（如果 PDF 恰好保留了）
+        if s.startswith("#"):
+            return True
+        # 常见“第X章/第X节”标题
+        import re
+
+        if re.match(r"^第[一二三四五六七八九十0-9]+[章节条].*$", s):
+            return True
+        # 短句且不以句号/问号结尾，常是标题
+        if len(s) <= 80 and not s.endswith(("。", "？", "！", ".", "?", "!", ":")):
+            if _cjk_count(s) > 0:
+                return True
+            # 英文标题倾向于 Title Case 或包含少量符号
+            if re.match(r"^[A-Za-z][A-Za-z0-9\s\\-]+$", s):
+                return True
+        return False
+
+    def _split_structured_text(text: str) -> list[tuple[str, str]]:
+        """
+        将一段文本拆成若干块：普通(normal) / 代码(code) / 表格(table)。
+        """
+        lines = text.splitlines()
+        blocks: list[tuple[str, list[str]]] = []
+        buf: list[str] = []
+        buf_type: str = "normal"
+        miss_count = 0
+
+        def _flush():
+            nonlocal buf, buf_type, miss_count
+            if buf:
+                blocks.append((buf_type, buf))
+            buf = []
+            buf_type = "normal"
+            miss_count = 0
+
+        in_fence = False
+        for line in lines:
+            # fence 形式代码块（如果 PDF 恰好保留了 ```）
+            if "```" in line:
+                if not in_fence:
+                    _flush()
+                    buf_type = "code"
+                    buf.append(line)
+                    in_fence = True
+                else:
+                    buf.append(line)
+                    in_fence = False
+                    _flush()
+                continue
+
+            if in_fence:
+                buf_type = "code"
+                buf.append(line)
+                continue
+
+            if buf_type == "normal":
+                if _is_code_line(line):
+                    buf_type = "code"
+                    buf.append(line)
+                elif _is_table_line(line):
+                    buf_type = "table"
+                    buf.append(line)
+                else:
+                    buf.append(line)
+            else:
+                # code/table 块允许遇到空行
+                if not line.strip():
+                    buf.append(line)
+                    continue
+
+                if buf_type == "code" and _is_code_line(line):
+                    buf.append(line)
+                    continue
+                if buf_type == "table" and _is_table_line(line):
+                    buf.append(line)
+                    continue
+
+                miss_count += 1
+                if miss_count >= 2:
+                    _flush()
+                    buf.append(line)
+                else:
+                    buf.append(line)
+
+        _flush()
+        return [(t, "\n".join(ls).strip()) for t, ls in blocks if "\n".join(ls).strip()]
+
+    def _split_by_heading_then_recursive(
+        text: str, *, separators: list[str]
+    ) -> list[str]:
+        """
+        对“普通文本块”再做一次疑似标题分段，然后用 RecursiveCharacterTextSplitter 兜底。
+        """
+        lines = text.splitlines()
+        segments: list[str] = []
+        cur: list[str] = []
+        for line in lines:
+            if _is_heading_line(line) and cur:
+                seg = "\n".join(cur).strip()
+                if seg:
+                    segments.append(seg)
+                cur = [line]
+            else:
+                cur.append(line)
+        tail = "\n".join(cur).strip()
+        if tail:
+            segments.append(tail)
+
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            separators=separators,
+        )
+
+        out: list[str] = []
+        for seg in segments:
+            if len(seg) <= chunk_size:
+                out.append(seg)
+            else:
+                out.extend(splitter.split_text(seg))
+        return out
+
+    def _split_block_text(block_text: str, block_type: str) -> list[str]:
+        if not block_text:
+            return []
+        if block_type in {"code", "table"}:
+            # 保持行边界：优先按换行切，尽量不把表格/代码“切散成碎片”
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                separators=["\n", " "],
+            )
+            return splitter.split_text(block_text)
+
+        # 普通文本：优先按标题/段落边界拆
+        return _split_by_heading_then_recursive(
+            block_text,
+            separators=["\n\n", "\n", " ", ""],
+        )
+
     loader = PyPDFLoader(str(pdf_path))
     documents = loader.load()
 
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-    )
-    docs = text_splitter.split_documents(documents)
+    docs: list[Document] = []
+    for d in documents:
+        base_meta = dict(d.metadata or {})
+        if extra_metadata:
+            base_meta.update(extra_metadata)
 
-    if extra_metadata:
-        for d in docs:
-            d.metadata.update(extra_metadata)
+        blocks = _split_structured_text(d.page_content)
+        for block_type, block_text in blocks:
+            for chunk_text in _split_block_text(block_text, block_type):
+                if chunk_text.strip():
+                    docs.append(Document(page_content=chunk_text, metadata=base_meta))
 
     return docs
 
