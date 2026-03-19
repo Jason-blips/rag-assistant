@@ -62,7 +62,7 @@ def rag_answer(
     except Exception as e:
         return f"加载向量库失败：{e}", ""
 
-    docs, scores = _retrieve(db, question, k=k)
+    docs, scores = _retrieve(db, question, k=k, persist_dir=persist_dir)
     context_text = _format_docs_for_display(docs, scores)
 
     if not use_llm:

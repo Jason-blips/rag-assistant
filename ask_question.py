@@ -4,6 +4,7 @@ from vectorstore_utils import (
     DEFAULT_COLLECTION_NAME,
     DEFAULT_EMBEDDING_MODEL_NAME,
     DEFAULT_PERSIST_DIR,
+    hybrid_retrieve,
     load_vectorstore,
 )
 
@@ -49,11 +50,27 @@ def _doc_source_hint(doc) -> str:
     return ""
 
 
-def _retrieve(db, question: str, k: int):
+def _retrieve(
+    db,
+    question: str,
+    k: int,
+    persist_dir: str = str(DEFAULT_PERSIST_DIR),
+    use_reranker: bool = True,
+):
     """
-    优先使用可带相似度分数的接口；否则退化到 retriever。
+    优先使用 BM25+向量混合检索(RRF 融合 + 可选 Reranker 精排)；
+    如果 BM25 语料不可用则退化到纯向量检索。
     返回 (docs, scores?)，scores 若不可用则为 None。
     """
+    try:
+        return hybrid_retrieve(
+            db=db, query=question, k=k,
+            persist_directory=persist_dir,
+            use_reranker=use_reranker,
+        )
+    except FileNotFoundError:
+        pass
+
     try:
         pairs = db.similarity_search_with_relevance_scores(question, k=k)
         docs = [d for d, _ in pairs]
@@ -146,16 +163,20 @@ def ask(
     use_llm: bool = True,
     llm_model: str = "qwen-turbo",
     print_context: bool = True,
+    use_reranker: bool = True,
 ) -> None:
     """
-    先从向量库检索相关段落，再（可选）调用阿里云 LLM 生成最终汇总答案。
+    先从向量库检索相关段落（混合检索 + Reranker），再（可选）调用阿里云 LLM 生成最终汇总答案。
     """
     db = load_vectorstore(
         persist_directory=persist_dir,
         model_name=embedding_model,
         collection_name=collection_name,
     )
-    docs, scores = _retrieve(db=db, question=question, k=k)
+    docs, scores = _retrieve(
+        db=db, question=question, k=k,
+        persist_dir=persist_dir, use_reranker=use_reranker,
+    )
 
     print("=" * 50)
     print("你的问题：", question)
