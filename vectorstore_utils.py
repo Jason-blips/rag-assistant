@@ -22,6 +22,7 @@ BM25_CORPUS_FILENAME = "bm25_corpus.pkl"
 DEFAULT_BM25_WEIGHT = 0.4
 DEFAULT_VECTOR_WEIGHT = 0.6
 RRF_K = 60  # Reciprocal Rank Fusion 常数
+DEFAULT_RERANKER_MODEL_NAME = "BAAI/bge-reranker-base"
 
 
 def get_embeddings(model_name: Optional[str] = None) -> HuggingFaceEmbeddings:
@@ -82,6 +83,29 @@ def _tokenize(text: str) -> list[str]:
     return tokens
 
 
+def rerank(
+    query: str,
+    docs: list[Document],
+    top_k: int = 3,
+    model_name: str = DEFAULT_RERANKER_MODEL_NAME,
+) -> tuple[list[Document], list[float]]:
+    """
+    用 Cross-Encoder 对候选文档精排，返回 top_k 结果和对应分数。
+    模型首次调用时自动下载并缓存。
+    """
+    from sentence_transformers import CrossEncoder
+
+    if not docs:
+        return [], []
+
+    model = CrossEncoder(model_name)
+    pairs = [[query, doc.page_content] for doc in docs]
+    scores = model.predict(pairs).tolist()
+
+    scored = sorted(zip(docs, scores), key=lambda x: x[1], reverse=True)[:top_k]
+    return [d for d, _ in scored], [s for _, s in scored]
+
+
 def hybrid_retrieve(
     db: Chroma,
     query: str,
@@ -90,11 +114,13 @@ def hybrid_retrieve(
     persist_directory: Path | str = DEFAULT_PERSIST_DIR,
     bm25_weight: float = DEFAULT_BM25_WEIGHT,
     vector_weight: float = DEFAULT_VECTOR_WEIGHT,
+    use_reranker: bool = True,
+    reranker_model: str = DEFAULT_RERANKER_MODEL_NAME,
 ) -> tuple[list[Document], list[float]]:
     """
-    BM25 关键词 + 向量语义双路检索，用 Reciprocal Rank Fusion (RRF) 融合排序。
+    BM25 关键词 + 向量语义双路检索，RRF 融合，可选 Cross-Encoder 精排。
 
-    返回 (docs, rrf_scores)，长度为 min(k, 去重后候选数)。
+    流程：双路各取 candidate_k 条 → RRF 融合去重 → (可选) Reranker 精排 → 返回 top-k。
     """
     from rank_bm25 import BM25Okapi
 
@@ -126,9 +152,17 @@ def hybrid_retrieve(
         rrf_scores[key] = rrf_scores.get(key, 0.0) + bm25_weight / (RRF_K + rank + 1)
         doc_map.setdefault(key, doc)
 
-    sorted_keys = sorted(rrf_scores, key=rrf_scores.__getitem__, reverse=True)[:k]
-    result_docs = [doc_map[key] for key in sorted_keys]
-    result_scores = [rrf_scores[key] for key in sorted_keys]
+    # RRF 粗排：取足够多的候选送给 reranker
+    rerank_pool_size = max(k * 3, 10) if use_reranker else k
+    sorted_keys = sorted(rrf_scores, key=rrf_scores.__getitem__, reverse=True)[:rerank_pool_size]
+    candidates = [doc_map[key] for key in sorted_keys]
+
+    # --- Reranker 精排 ---
+    if use_reranker and candidates:
+        return rerank(query=query, docs=candidates, top_k=k, model_name=reranker_model)
+
+    result_docs = candidates[:k]
+    result_scores = [rrf_scores[d.page_content] for d in result_docs]
     return result_docs, result_scores
 
 

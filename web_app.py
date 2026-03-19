@@ -45,6 +45,7 @@ def rag_answer(
     question: str,
     k: int,
     use_llm: bool,
+    use_reranker: bool,
     persist_dir: str,
     collection_name: str,
     embedding_model: str,
@@ -62,7 +63,9 @@ def rag_answer(
     except Exception as e:
         return f"加载向量库失败：{e}", ""
 
-    docs, scores = _retrieve(db, question, k=k, persist_dir=persist_dir)
+    docs, scores = _retrieve(
+        db, question, k=k, persist_dir=persist_dir, use_reranker=use_reranker,
+    )
     context_text = _format_docs_for_display(docs, scores)
 
     if not use_llm:
@@ -133,6 +136,10 @@ def main():
                         label="是否调用 LLM 生成汇总回答",
                         value=True,
                     )
+                    use_reranker = gr.Checkbox(
+                        label="是否启用 Cross-Encoder 重排序",
+                        value=True,
+                    )
 
             with gr.Column(scale=5):
                 context_box = gr.Textbox(
@@ -152,6 +159,7 @@ def main():
                 question,
                 k,
                 use_llm,
+                use_reranker,
                 persist_dir,
                 collection_name,
                 embedding_model,

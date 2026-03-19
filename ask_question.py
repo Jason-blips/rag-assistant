@@ -244,6 +244,7 @@ def main() -> None:
     parser.add_argument("--no-llm", action="store_true", help="只检索不调用 LLM（默认会调用）")
     parser.add_argument("--llm-model", type=str, default="qwen-turbo", help="DashScope 模型名（默认: qwen-turbo）")
     parser.add_argument("--no-context", action="store_true", help="不打印检索段落（默认会打印）")
+    parser.add_argument("--no-reranker", action="store_true", help="跳过 Cross-Encoder 重排序（默认启用）")
 
     args = parser.parse_args()
 
@@ -257,6 +258,7 @@ def main() -> None:
             use_llm=not args.no_llm,
             llm_model=args.llm_model,
             print_context=not args.no_context,
+            use_reranker=not args.no_reranker,
         )
         return
 
@@ -284,6 +286,7 @@ def main() -> None:
             use_llm=not args.no_llm,
             llm_model=args.llm_model,
             print_context=not args.no_context,
+            use_reranker=not args.no_reranker,
         )
 
 

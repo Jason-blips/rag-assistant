@@ -6,4 +6,6 @@ chromadb
 sentence-transformers
 dashscope
 gradio
+rank_bm25
+jieba
 
