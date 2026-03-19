@@ -1,4 +1,5 @@
 from pathlib import Path
+import pickle
 from typing import Iterable, Optional
 
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -9,13 +10,18 @@ from langchain_core.documents import Document
 
 
 # 基础配置集中在这里，便于统一修改
-DEFAULT_PDF_PATH = Path("data_week6.pdf")
+DEFAULT_KNOWLEDGE_BASE_DIR = Path("knowledge_base")  # 课件统一存放目录
+DEFAULT_PDF_PATH = DEFAULT_KNOWLEDGE_BASE_DIR / "data_week6.pdf"
 DEFAULT_PERSIST_DIR = Path("./vector_db")
 # 为了兼容你之前已经构建好的向量库，这里保持 Chroma 的默认 collection 名称：langchain
 DEFAULT_COLLECTION_NAME = "langchain"
-DEFAULT_EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+DEFAULT_EMBEDDING_MODEL_NAME = "BAAI/bge-small-zh-v1.5"
 DEFAULT_CHUNK_SIZE = 500
 DEFAULT_CHUNK_OVERLAP = 100
+BM25_CORPUS_FILENAME = "bm25_corpus.pkl"
+DEFAULT_BM25_WEIGHT = 0.4
+DEFAULT_VECTOR_WEIGHT = 0.6
+RRF_K = 60  # Reciprocal Rank Fusion 常数
 
 
 def get_embeddings(model_name: Optional[str] = None) -> HuggingFaceEmbeddings:
@@ -24,9 +30,106 @@ def get_embeddings(model_name: Optional[str] = None) -> HuggingFaceEmbeddings:
     通过集中入口保证构建阶段与查询阶段使用完全一致的模型配置。
     """
 
-    return HuggingFaceEmbeddings(
-        model_name=model_name or DEFAULT_EMBEDDING_MODEL_NAME
-    )
+    name = model_name or DEFAULT_EMBEDDING_MODEL_NAME
+    kwargs: dict = {}
+    if "bge" in name.lower():
+        kwargs["encode_kwargs"] = {"normalize_embeddings": True}
+        kwargs["query_instruction"] = "为这个句子生成表示以用于检索相关文章："
+    return HuggingFaceEmbeddings(model_name=name, **kwargs)
+
+
+def _bm25_corpus_path(persist_directory: Path | str) -> Path:
+    return Path(persist_directory) / BM25_CORPUS_FILENAME
+
+
+def save_bm25_corpus(
+    docs: list[Document],
+    persist_directory: Path | str = DEFAULT_PERSIST_DIR,
+    append: bool = False,
+) -> None:
+    """将切分后的 Document 列表序列化，供 BM25 检索使用。"""
+    path = _bm25_corpus_path(persist_directory)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    if append and path.exists():
+        with open(path, "rb") as f:
+            existing: list[Document] = pickle.load(f)
+        existing.extend(docs)
+        docs = existing
+
+    with open(path, "wb") as f:
+        pickle.dump(docs, f)
+
+
+def load_bm25_corpus(persist_directory: Path | str = DEFAULT_PERSIST_DIR) -> list[Document]:
+    path = _bm25_corpus_path(persist_directory)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"BM25 语料库不存在: {path.resolve()}，请先运行 build_vector_db.py 构建。"
+        )
+    with open(path, "rb") as f:
+        return pickle.load(f)
+
+
+def _tokenize(text: str) -> list[str]:
+    """中英文混合分词：jieba 切中文，空格切英文，全部转小写。"""
+    import jieba
+    tokens: list[str] = []
+    for token in jieba.cut(text):
+        t = token.strip().lower()
+        if t:
+            tokens.append(t)
+    return tokens
+
+
+def hybrid_retrieve(
+    db: Chroma,
+    query: str,
+    k: int = 3,
+    candidate_k: int = 15,
+    persist_directory: Path | str = DEFAULT_PERSIST_DIR,
+    bm25_weight: float = DEFAULT_BM25_WEIGHT,
+    vector_weight: float = DEFAULT_VECTOR_WEIGHT,
+) -> tuple[list[Document], list[float]]:
+    """
+    BM25 关键词 + 向量语义双路检索，用 Reciprocal Rank Fusion (RRF) 融合排序。
+
+    返回 (docs, rrf_scores)，长度为 min(k, 去重后候选数)。
+    """
+    from rank_bm25 import BM25Okapi
+
+    # --- 向量检索 ---
+    vector_pairs = db.similarity_search_with_relevance_scores(query, k=candidate_k)
+
+    # --- BM25 检索 ---
+    corpus_docs = load_bm25_corpus(persist_directory)
+    tokenized_corpus = [_tokenize(d.page_content) for d in corpus_docs]
+    bm25 = BM25Okapi(tokenized_corpus)
+    tokenized_query = _tokenize(query)
+    bm25_scores = bm25.get_scores(tokenized_query)
+    top_indices = sorted(
+        range(len(bm25_scores)), key=lambda i: bm25_scores[i], reverse=True
+    )[:candidate_k]
+    bm25_pairs = [(corpus_docs[i], bm25_scores[i]) for i in top_indices]
+
+    # --- RRF 融合 ---
+    rrf_scores: dict[str, float] = {}
+    doc_map: dict[str, Document] = {}
+
+    for rank, (doc, _score) in enumerate(vector_pairs):
+        key = doc.page_content
+        rrf_scores[key] = rrf_scores.get(key, 0.0) + vector_weight / (RRF_K + rank + 1)
+        doc_map.setdefault(key, doc)
+
+    for rank, (doc, _score) in enumerate(bm25_pairs):
+        key = doc.page_content
+        rrf_scores[key] = rrf_scores.get(key, 0.0) + bm25_weight / (RRF_K + rank + 1)
+        doc_map.setdefault(key, doc)
+
+    sorted_keys = sorted(rrf_scores, key=rrf_scores.__getitem__, reverse=True)[:k]
+    result_docs = [doc_map[key] for key in sorted_keys]
+    result_scores = [rrf_scores[key] for key in sorted_keys]
+    return result_docs, result_scores
 
 
 def get_text_chunks_from_pdf(
@@ -116,6 +219,7 @@ def build_vectorstore_from_pdf(
         collection_name=collection_name,
     )
     db.add_documents(texts)
+    save_bm25_corpus(texts, persist_directory=persist_directory, append=True)
     return db
 
 
@@ -145,12 +249,12 @@ def build_vectorstore_from_pdf_dir(
     )
 
     pdf_paths: Iterable[Path] = pdf_root_dir.rglob("*.pdf")
+    all_texts: list[Document] = []
     count = 0
     for pdf_path in pdf_paths:
         if not pdf_path.is_file():
             continue
 
-        # 课程名：优先取相对根目录的第一级子目录
         try:
             rel = pdf_path.relative_to(pdf_root_dir)
             parts = rel.parts
@@ -173,11 +277,13 @@ def build_vectorstore_from_pdf_dir(
             continue
 
         db.add_documents(texts)
+        all_texts.extend(texts)
         count += 1
 
     if count == 0:
         raise RuntimeError(f"在目录 {pdf_root_dir.resolve()} 下未找到任何 PDF 文件。")
 
+    save_bm25_corpus(all_texts, persist_directory=persist_directory, append=False)
     return db
 
 

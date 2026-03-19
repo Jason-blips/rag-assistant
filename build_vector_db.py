@@ -5,6 +5,7 @@ from vectorstore_utils import (
     build_vectorstore_from_pdf,
     build_vectorstore_from_pdf_dir,
     DEFAULT_PDF_PATH,
+    DEFAULT_KNOWLEDGE_BASE_DIR,
     DEFAULT_PERSIST_DIR,
     DEFAULT_COLLECTION_NAME,
     DEFAULT_CHUNK_SIZE,
@@ -34,14 +35,14 @@ def main() -> None:
     parser.add_argument(
         "--pdf",
         type=str,
-        default=str(DEFAULT_PDF_PATH),
-        help="要构建向量库的单个 PDF 路径（默认: data_week6.pdf）",
+        default=None,
+        help="要构建向量库的单个 PDF 路径（指定后只处理该文件）",
     )
     parser.add_argument(
         "--pdf-dir",
         type=str,
-        default=None,
-        help="批量导入的 PDF 根目录（会递归查找 *.pdf）",
+        default=str(DEFAULT_KNOWLEDGE_BASE_DIR),
+        help=f"批量导入的 PDF 根目录（默认: {DEFAULT_KNOWLEDGE_BASE_DIR}，递归查找 *.pdf）",
     )
     parser.add_argument(
         "--persist-dir",
@@ -78,19 +79,8 @@ def main() -> None:
 
     persist_dir = Path(args.persist_dir)
 
-    if args.pdf_dir:
-        pdf_root = Path(args.pdf_dir)
-        build_vectorstore_from_pdf_dir(
-            pdf_root_dir=pdf_root,
-            persist_directory=persist_dir,
-            model_name=args.embedding_model,
-            collection_name=args.collection,
-            chunk_size=args.chunk_size,
-            chunk_overlap=args.chunk_overlap,
-        )
-        print(f"✅ 向量数据库批量构建/更新完成！")
-        print(f"   PDF 根目录: {pdf_root.resolve()}")
-    else:
+    if args.pdf:
+        # 指定了单个 PDF —— 只处理这一个文件
         pdf_path = Path(args.pdf)
         build_vectorstore_from_pdf(
             pdf_path=pdf_path,
@@ -103,6 +93,19 @@ def main() -> None:
         )
         print(f"✅ 向量数据库构建/更新完成！")
         print(f"   PDF: {pdf_path.resolve()}")
+    else:
+        # 默认：从知识库文件夹批量导入
+        pdf_root = Path(args.pdf_dir)
+        build_vectorstore_from_pdf_dir(
+            pdf_root_dir=pdf_root,
+            persist_directory=persist_dir,
+            model_name=args.embedding_model,
+            collection_name=args.collection,
+            chunk_size=args.chunk_size,
+            chunk_overlap=args.chunk_overlap,
+        )
+        print(f"✅ 向量数据库批量构建/更新完成！")
+        print(f"   知识库目录: {pdf_root.resolve()}")
     print(f"   向量库目录: {persist_dir.resolve()}")
     print(f"   Collection: {args.collection}")
     print(f"   Embedding: {args.embedding_model}")
