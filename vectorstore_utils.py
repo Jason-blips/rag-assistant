@@ -17,6 +17,7 @@ DEFAULT_PDF_PATH = DEFAULT_KNOWLEDGE_BASE_DIR / "data_week6.pdf"
 DEFAULT_PERSIST_DIR = _PROJECT_ROOT / "vector_db"
 # 为了兼容你之前已经构建好的向量库，这里保持 Chroma 的默认 collection 名称：langchain
 DEFAULT_COLLECTION_NAME = "langchain"
+DEFAULT_CONVERSATION_COLLECTION_NAME = "conversation_memory"
 DEFAULT_EMBEDDING_MODEL_NAME = "BAAI/bge-small-zh-v1.5"
 DEFAULT_CHUNK_SIZE = 500
 DEFAULT_CHUNK_OVERLAP = 100

@@ -9,10 +9,12 @@ from pydantic import BaseModel
 from ask_question import _retrieve, _summarize_with_llm_stream, _doc_source_hint
 from vectorstore_utils import (
     DEFAULT_COLLECTION_NAME,
+    DEFAULT_CONVERSATION_COLLECTION_NAME,
     DEFAULT_EMBEDDING_MODEL_NAME,
     DEFAULT_PERSIST_DIR,
     compute_course_match_score,
     load_vectorstore,
+    rerank,
 )
 from langchain_core.documents import Document
 
@@ -59,6 +61,59 @@ def _load_db(
     )
 
 
+def _load_conversation_db(
+    persist_dir: str,
+    embedding_model: str,
+):
+    return load_vectorstore(
+        persist_directory=persist_dir,
+        model_name=embedding_model,
+        collection_name=DEFAULT_CONVERSATION_COLLECTION_NAME,
+    )
+
+
+def _get_recent_conversation_docs(
+    conv_db,
+    session_id: str,
+    rounds: int = 3,
+) -> list[Document]:
+    """
+    从对话集合中按 seq 读取最近 N 轮（每轮 user+assistant 两条）历史。
+    """
+    max_messages = max(1, rounds * 2)
+    try:
+        raw = conv_db._collection.get(  # noqa: SLF001 - 需要精确按 metadata 读取
+            where={"session_id": session_id},
+            include=["metadatas", "documents"],
+        )
+        metadatas = raw.get("metadatas") or []
+        documents = raw.get("documents") or []
+        docs: list[Document] = []
+        for m, d in zip(metadatas, documents):
+            md = m or {}
+            docs.append(Document(page_content=d, metadata=md))
+        docs.sort(key=lambda x: (x.metadata or {}).get("seq", -1))
+        return docs[-max_messages:]
+    except Exception:
+        return []
+
+
+def _enhance_query_with_conversation(question: str, conv_docs: list[Document]) -> str:
+    if not conv_docs:
+        return question
+    lines: list[str] = []
+    for d in conv_docs[-6:]:
+        md = d.metadata or {}
+        role = md.get("role", "conversation")
+        text = (d.page_content or "").strip()
+        if text:
+            lines.append(f"{role}: {text}")
+    if not lines:
+        return question
+    history_block = "\n".join(lines)
+    return f"{question}\n\n[最近对话历史]\n{history_block}"
+
+
 def _format_docs_for_display(docs, scores: List[float] | None) -> str:
     if not docs:
         return "没有检索到所需内容"
@@ -86,21 +141,52 @@ def _sse_event(payload: Dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _build_source_suffix(docs, llm_model: str) -> str:
+    """
+    给最终回答附加来源标识：
+    - 有课件检索命中：参考课件段落X-Y
+    - 无课件命中（降级）：该问题回答由 <model> 模型生成
+    """
+    kb_positions: list[int] = []
+    for i, d in enumerate(docs or []):
+        md = getattr(d, "metadata", None) or {}
+        if md.get("doc_type") == "kb":
+            kb_positions.append(i + 1)
+
+    if kb_positions:
+        if len(kb_positions) == 1:
+            return f"参考课件段落{kb_positions[0]}"
+
+        contiguous = all(
+            b - a == 1 for a, b in zip(kb_positions, kb_positions[1:])
+        )
+        if contiguous:
+            return f"参考课件段落{kb_positions[0]}-{kb_positions[-1]}"
+        return "参考课件段落" + "、".join(str(x) for x in kb_positions)
+
+    return f"该问题回答由 {llm_model} 模型生成"
+
+
 def _chat_stream(req: ChatRequest) -> Iterator[str]:
     match_score, _ = compute_course_match_score(req.question)
     should_retrieve = match_score >= RETRIEVAL_MATCH_GATE
 
     docs = []
     scores = None
-    db = None
+    kb_db = None
+    conv_db = None
 
     # 1) 只有在“匹配度足够高”时才加载向量库并做检索。
     #    这样满足“低于 30% 不选择查询向量库”的性能诉求。
     if should_retrieve:
         try:
-            db = _load_db(
+            kb_db = _load_db(
                 persist_dir=req.persist_dir,
                 collection_name=req.collection_name,
+                embedding_model=req.embedding_model,
+            )
+            conv_db = _load_conversation_db(
+                persist_dir=req.persist_dir,
                 embedding_model=req.embedding_model,
             )
         except Exception as e:
@@ -113,7 +199,7 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
         #    这样本轮检索就能把最近对话向量一起纳入 context。
         user_seq = max(len(req.history) - 1, 0)
         try:
-            db.add_documents(
+            conv_db.add_documents(
                 documents=[
                     Document(
                         page_content=req.question,
@@ -131,9 +217,19 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
             pass
 
         try:
-            docs, scores = _retrieve(
-                db,
+            conv_docs = _get_recent_conversation_docs(
+                conv_db,
+                req.session_id,
+                rounds=3,
+            )
+            enhanced_query = _enhance_query_with_conversation(
                 req.question,
+                conv_docs,
+            )
+
+            kb_docs, kb_scores = _retrieve(
+                kb_db,
+                enhanced_query,
                 k=req.k,
                 persist_dir=req.persist_dir,
                 use_reranker=req.use_reranker,
@@ -142,35 +238,58 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
             yield _sse_event({"type": "error", "content": f"检索失败：{e}"})
             return
 
-        if scores is not None and docs:
-            # 当“课件/KB”部分的相似度整体偏低时，降级：不把检索结果喂给 LLM。
-            # 注意：对话向量（doc_type=conversation）会与当前问题高度相似，
-            # 如果用全局 max(scores) 会导致永远不降级；因此只看 doc_type=kb 的候选。
-            kb_scores: list[float] = []
-            for d, s in zip(docs, scores):
-                md = getattr(d, "metadata", None) or {}
-                if md.get("doc_type") == "kb":
-                    kb_scores.append(s)
-
-            # 如果 top-k 里全是 conversation（没有 KB），补跑一次仅 KB 检索，
-            # 避免强相关课程问题被“会话向量”挤掉后误判为不可用。
-            if not kb_scores and db is not None:
-                try:
-                    kb_pairs = db.similarity_search_with_relevance_scores(
-                        req.question,
-                        k=req.k,
-                        filter={"doc_type": "kb"},
-                    )
-                    if kb_pairs:
-                        docs = [d for d, _ in kb_pairs]
-                        scores = [s for _, s in kb_pairs]
-                        kb_scores = list(scores)
-                except Exception:
-                    pass
-
-            if not kb_scores or max(kb_scores) < RETRIEVAL_USABLE_THRESHOLD:
+        if kb_scores is not None and kb_docs:
+            # 仅以课件向量集合的得分判断是否可用。
+            if max(kb_scores) < RETRIEVAL_USABLE_THRESHOLD:
                 docs = []
                 scores = None
+            else:
+                # KB 可用时，将“最近 3 轮对话片段 + KB 候选”一起重排，增强上下文关联。
+                merged_docs = list(kb_docs)
+                for d in conv_docs:
+                    md = d.metadata or {}
+                    md = {
+                        **md,
+                        "doc_type": "conversation",
+                    }
+                    merged_docs.append(Document(page_content=d.page_content, metadata=md))
+
+                if req.use_reranker and merged_docs:
+                    reranked_docs, reranked_scores = rerank(
+                        query=req.question,
+                        docs=merged_docs,
+                        top_k=req.k,
+                    )
+                    # 输出时优先保留课件段落，避免对话片段排到最前造成“像没检索到课件”。
+                    selected_docs: list[Document] = []
+                    selected_scores: list[float] = []
+
+                    # 先选 KB
+                    for d, s in zip(reranked_docs, reranked_scores):
+                        md = d.metadata or {}
+                        if md.get("doc_type") == "kb":
+                            selected_docs.append(d)
+                            selected_scores.append(s)
+                            if len(selected_docs) >= req.k:
+                                break
+
+                    # 不足再补 conversation
+                    if len(selected_docs) < req.k:
+                        for d, s in zip(reranked_docs, reranked_scores):
+                            if d in selected_docs:
+                                continue
+                            selected_docs.append(d)
+                            selected_scores.append(s)
+                            if len(selected_docs) >= req.k:
+                                break
+
+                    docs, scores = selected_docs, selected_scores
+                else:
+                    docs = merged_docs[:req.k]
+                    scores = kb_scores[: len(docs)]
+        else:
+            docs = []
+            scores = None
 
     context_text = _format_docs_for_display(docs, scores)
     yield _sse_event({"type": "context", "content": context_text})
@@ -194,10 +313,10 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
 
         # 3) 只有在进行检索时，才把“最终助手回答”写入对话向量库，
         #    避免在非课程/低匹配问题上造成不必要的向量库开销。
-        if should_retrieve and db is not None:
+        if should_retrieve and conv_db is not None:
             assistant_seq = max(len(req.history) - 1, 0) + 1
             try:
-                db.add_documents(
+                conv_db.add_documents(
                     documents=[
                         Document(
                             page_content=last_text,
@@ -224,13 +343,21 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
                         )
                     try:
                         if ids_to_delete:
-                            db.delete(ids=ids_to_delete)
+                            conv_db.delete(ids=ids_to_delete)
                     except Exception:
                         pass
             except Exception:
                 pass
 
-        yield _sse_event({"type": "done", "content": last_text})
+        source_suffix = _build_source_suffix(docs, req.llm_model)
+        if last_text.strip():
+            final_text = f"{last_text}\n\n—— {source_suffix}"
+        else:
+            final_text = source_suffix
+
+        # 额外发一帧 answer，保证前端能看到来源标识（即使 done 不刷新主回答）。
+        yield _sse_event({"type": "answer", "content": final_text})
+        yield _sse_event({"type": "done", "content": final_text})
     except Exception as e:
         yield _sse_event({"type": "error", "content": f"调用 LLM 失败：{e}"})
 

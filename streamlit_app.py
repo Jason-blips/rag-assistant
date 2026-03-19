@@ -122,10 +122,9 @@ def main():
 
         with st.chat_message("assistant"):
             with st.spinner("AI思考中..."):
-                with st.expander("检索到的相关段落", expanded=False):
-                    context_area = st.empty()
-                    context_area.markdown("")
                 context_text = ""
+                context_placeholder = st.empty()
+                context_area = None
 
                 answer_area = st.empty()
                 current_answer = ""
@@ -148,7 +147,14 @@ def main():
 
                     if event_type == "context":
                         context_text = event_content
-                        context_area.markdown(event_content)
+                        # 降级为纯模型生成时，不展示“检索段落”栏位。
+                        if event_content.strip() and event_content.strip() != "没有检索到所需内容":
+                            with context_placeholder.container():
+                                with st.expander("检索到的相关段落", expanded=False):
+                                    context_area = st.empty()
+                                    context_area.markdown(event_content)
+                        else:
+                            context_placeholder.empty()
                     elif event_type == "answer":
                         current_answer = event_content
                         answer_area.markdown(current_answer)
