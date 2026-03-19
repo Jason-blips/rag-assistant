@@ -66,18 +66,54 @@ def rag_answer(
     docs, scores = _retrieve(
         db, question, k=k, persist_dir=persist_dir, use_reranker=use_reranker,
     )
-    context_text = _format_docs_for_display(docs, scores)
 
     if not use_llm:
+        # 先做“KB 降级判断”，避免把与课件无关的向量（例如对话向量）展示给用户。
+        retrieval_usable_threshold = 0.50
+        docs_for_llm = docs
+        scores_for_display = scores
+        if scores is not None and docs:
+            kb_scores: list[float] = []
+            for d, s in zip(docs, scores):
+                md = getattr(d, "metadata", None) or {}
+                if md.get("doc_type") == "kb":
+                    kb_scores.append(s)
+            # 双阈值逻辑（展示侧）：
+            # 已检索（默认由 _retrieve 完成）但 KB 最高分达不到 0.5，视为检索结果不可用。
+            if not kb_scores or max(kb_scores) < retrieval_usable_threshold:
+                docs_for_llm = []
+                scores_for_display = None
+        context_text = _format_docs_for_display(docs_for_llm, scores_for_display)
         return context_text, ""
 
-    if not docs:
-        return context_text, "未检索到相关段落，已中止 LLM 汇总。请尝试调整问题、增加 k 或先构建/更新向量库。"
-
     try:
-        answer = _summarize_with_llm(question=question, docs=docs, model=llm_model)
+        # 条件降级：当检索“课件/KB 部分”的相似度整体偏低时，不把检索结果喂给 LLM。
+        # 会话向量（doc_type=conversation）与当前问题高度相似，不能参与降级阈值判断。
+        retrieval_usable_threshold = 0.50
+        docs_for_llm = docs
+        scores_for_display = scores
+        if scores is not None and docs:
+            kb_scores: list[float] = []
+            for d, s in zip(docs, scores):
+                md = getattr(d, "metadata", None) or {}
+                if md.get("doc_type") == "kb":
+                    kb_scores.append(s)
+            # 双阈值逻辑（生成侧）：
+            # 1) 触发检索阈值(0.3)由外部路由层负责；
+            # 2) 若已检索但可用性达不到 0.5，则不把检索结果喂给 LLM。
+            if not kb_scores or max(kb_scores) < retrieval_usable_threshold:
+                docs_for_llm = []
+                scores_for_display = None
+
+        context_text = _format_docs_for_display(docs_for_llm, scores_for_display)
+        answer = _summarize_with_llm(
+            question=question,
+            docs=docs_for_llm,
+            model=llm_model,
+        )
     except Exception as e:
         answer = f"调用 LLM 失败：{e}"
+        context_text = ""
 
     return context_text, answer
 

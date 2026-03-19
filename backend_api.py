@@ -19,12 +19,12 @@ from langchain_core.documents import Document
 
 app = FastAPI(title="RAG Chat Backend（流式 SSE）")
 
-# 当检索返回的相关性分数整体很低时，视为“没有检索到所需内容”，
-# 但仍然允许 LLM 在空/弱上下文下生成回答（避免直接中止）。
-MIN_RELEVANCE_SCORE = 0.05
-
-# 用户要求的“检索触发门槛”：低于 30% 不走向量检索。
+#
+# 双阈值策略：
+# - 触发阈值：低于 0.3 不检索
+# - 可用阈值：触发检索后，若 top-k(KB) 最高分仍低于 0.5，则检索内容不喂给 LLM（直接走纯 LLM 生成）
 RETRIEVAL_MATCH_GATE = 0.30
+RETRIEVAL_USABLE_THRESHOLD = 0.50
 
 
 class ChatMessage(BaseModel):
@@ -143,8 +143,32 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
             return
 
         if scores is not None and docs:
-            # 仅基于分数做轻量判断：分数太低时将 docs 置空，从而触发“没有检索到所需内容”的提示。
-            if max(scores) < MIN_RELEVANCE_SCORE:
+            # 当“课件/KB”部分的相似度整体偏低时，降级：不把检索结果喂给 LLM。
+            # 注意：对话向量（doc_type=conversation）会与当前问题高度相似，
+            # 如果用全局 max(scores) 会导致永远不降级；因此只看 doc_type=kb 的候选。
+            kb_scores: list[float] = []
+            for d, s in zip(docs, scores):
+                md = getattr(d, "metadata", None) or {}
+                if md.get("doc_type") == "kb":
+                    kb_scores.append(s)
+
+            # 如果 top-k 里全是 conversation（没有 KB），补跑一次仅 KB 检索，
+            # 避免强相关课程问题被“会话向量”挤掉后误判为不可用。
+            if not kb_scores and db is not None:
+                try:
+                    kb_pairs = db.similarity_search_with_relevance_scores(
+                        req.question,
+                        k=req.k,
+                        filter={"doc_type": "kb"},
+                    )
+                    if kb_pairs:
+                        docs = [d for d, _ in kb_pairs]
+                        scores = [s for _, s in kb_pairs]
+                        kb_scores = list(scores)
+                except Exception:
+                    pass
+
+            if not kb_scores or max(kb_scores) < RETRIEVAL_USABLE_THRESHOLD:
                 docs = []
                 scores = None
 

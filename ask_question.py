@@ -141,10 +141,16 @@ def _summarize_with_llm(question: str, docs, model: str) -> str:
     dashscope.api_key = api_key
 
     context_text = _format_context(docs)
+    has_docs = bool(docs)
     system_prompt = (
         "你是一个严谨的Computer Science专业学习助教。请优先依据给定资料回答问题；"
         "如果资料不足，请明确说明“不足以确定”，不要编造。"
         "题目本身是英文，请同时给出对应的英文标准答案。"
+    )
+    key_basis_rule = (
+        '2) 关键依据：没有检索到所需内容（不引用段落编号）。'
+        if not has_docs
+        else '2) 关键依据：引用你使用到的段落编号，例如“段落 1、3”，必要时可简单说明理由。'
     )
     user_prompt = f"""下面是与问题相关的资料片段（可能不完整）：
 {context_text}
@@ -154,7 +160,7 @@ def _summarize_with_llm(question: str, docs, model: str) -> str:
 
 请严格按下面格式输出（不要添加额外小标题）：
 1) 中文最终回答：一段简洁的中文回答。 + 英文标准答案：一段准确的英文作答，适合作为英文考试/作业的标准答案。
-2) 关键依据：引用你使用到的段落编号，例如“段落 1、3”，必要时可简单说明理由。
+{key_basis_rule}
 """
 
     resp = dashscope.Generation.call(
@@ -223,6 +229,7 @@ def _summarize_with_llm_stream(
     dashscope.api_key = api_key
 
     context_text = _format_context(docs)
+    has_docs = bool(docs)
     history_text = _format_history_for_prompt(history or [])
 
     system_prompt = (
@@ -230,6 +237,12 @@ def _summarize_with_llm_stream(
         "如果资料不足，请明确说明“不足以确定”，不要编造。"
         "题目本身是英文，请同时给出对应的英文标准答案。"
     )
+    key_basis_rule = (
+        '2) 关键依据：没有检索到所需内容（不引用段落编号）。'
+        if not has_docs
+        else '2) 关键依据：引用你使用到的段落编号，例如“段落 1、3”，必要时可简单说明理由。'
+    )
+
     user_prompt = f"""对话历史（用于保持连贯性，必要时参考，不要替代资料）：
 {history_text or "（无）"}
 
@@ -241,7 +254,7 @@ def _summarize_with_llm_stream(
 
 请严格按下面格式输出（不要添加额外小标题）：
 1) 中文最终回答：一段简洁的中文回答。 + 英文标准答案：一段准确的英文作答，适合作为英文考试/作业的标准答案。
-2) 关键依据：引用你使用到的段落编号，例如“段落 1、3”，必要时可简单说明理由。
+{key_basis_rule}
 """
 
     resp_stream = dashscope.Generation.call(
