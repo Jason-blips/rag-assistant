@@ -10,9 +10,11 @@ from langchain_core.documents import Document
 
 
 # 基础配置集中在这里，便于统一修改
-DEFAULT_KNOWLEDGE_BASE_DIR = Path("knowledge_base")  # 课件统一存放目录
+# 注意：不要使用当前工作目录（cwd）相关的相对路径，否则从不同目录启动脚本会导致找不到文件。
+_PROJECT_ROOT = Path(__file__).resolve().parent
+DEFAULT_KNOWLEDGE_BASE_DIR = _PROJECT_ROOT / "knowledge_base"  # 课件统一存放目录
 DEFAULT_PDF_PATH = DEFAULT_KNOWLEDGE_BASE_DIR / "data_week6.pdf"
-DEFAULT_PERSIST_DIR = Path("./vector_db")
+DEFAULT_PERSIST_DIR = _PROJECT_ROOT / "vector_db"
 # 为了兼容你之前已经构建好的向量库，这里保持 Chroma 的默认 collection 名称：langchain
 DEFAULT_COLLECTION_NAME = "langchain"
 DEFAULT_EMBEDDING_MODEL_NAME = "BAAI/bge-small-zh-v1.5"

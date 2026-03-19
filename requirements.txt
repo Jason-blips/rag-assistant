@@ -6,6 +6,11 @@ chromadb
 sentence-transformers
 dashscope
 gradio
+streamlit>=1.33.0
+fastapi
+uvicorn[standard]
+requests
+langchain
 pypdf
 rank_bm25
 jieba
