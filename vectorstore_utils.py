@@ -35,7 +35,6 @@ def get_embeddings(model_name: Optional[str] = None) -> HuggingFaceEmbeddings:
     kwargs: dict = {}
     if "bge" in name.lower():
         kwargs["encode_kwargs"] = {"normalize_embeddings": True}
-        kwargs["query_instruction"] = "为这个句子生成表示以用于检索相关文章："
     return HuggingFaceEmbeddings(model_name=name, **kwargs)
 
 
