@@ -132,7 +132,15 @@ def _inject_ui_style() -> None:
         background: linear-gradient(165deg, var(--bg-top) 0%, var(--bg-mid) 28%, #f1f5f9 72%, #f8fafc 100%) !important;
         color: var(--text) !important;
     }
-    .block-container {padding-top: 2rem; padding-bottom: 2.5rem; max-width: 920px;}
+    .block-container {padding-top: 2rem; padding-bottom: 2.5rem; max-width: 1000px;}
+    /* 主对话槽：仅作用于包含底部输入框的那块卡片，避免污染消息内嵌的 bordered 容器 */
+    main [data-testid="stVerticalBlockBorderWrapper"]:has([data-testid="stChatInput"]) {
+        background: rgba(255, 255, 255, 0.96) !important;
+        border-radius: 20px !important;
+        padding: 1rem 1.15rem 0.85rem !important;
+        box-shadow: 0 12px 48px rgba(30, 27, 75, 0.12) !important;
+        border: 1px solid rgba(129, 140, 248, 0.45) !important;
+    }
     .stMarkdown, .stMarkdown p {color: var(--text) !important;}
     .stCodeBlock {border-radius: 10px; border: 1px solid #c7d2fe !important;}
     [data-testid="stChatMessage"] {
@@ -330,148 +338,161 @@ def main():
     use_reranker = True
     show_debug = False
 
-    for message in st.session_state["message"]:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-            if message["role"] == "assistant" and message.get("content"):
-                msg_id = message.get("id")
-                if msg_id:
-                    fb = st.session_state["feedback_state"].get(msg_id, {})
-                    submitted = fb.get("submitted", False)
-                    if not submitted:
-                        c1, c2 = st.columns([1, 1])
-                        if c1.button("👍 有帮助", key=f"fb_up_{msg_id}"):
-                            ok, err = _submit_feedback(
+    _sp_left, _chat_main, _sp_right = st.columns([1, 4, 1])
+    with _chat_main:
+        with st.container(border=True):
+            for message in st.session_state["message"]:
+                with st.chat_message(message["role"]):
+                    st.markdown(message["content"])
+                    if message["role"] == "assistant" and message.get("content"):
+                        msg_id = message.get("id")
+                        if msg_id:
+                            fb = st.session_state["feedback_state"].get(msg_id, {})
+                            submitted = fb.get("submitted", False)
+                            if not submitted:
+                                c1, c2 = st.columns([1, 1])
+                                if c1.button("👍 有帮助", key=f"fb_up_{msg_id}"):
+                                    ok, err = _submit_feedback(
+                                        backend_url=backend_url,
+                                        session_id=st.session_state["session_id"],
+                                        question=message.get("question"),
+                                        answer=message.get("content", ""),
+                                        rating="up",
+                                        reason=None,
+                                        meta=message.get("meta"),
+                                    )
+                                    if ok:
+                                        st.session_state["feedback_state"][msg_id] = {
+                                            "submitted": True,
+                                            "rating": "up",
+                                        }
+                                        st.rerun()
+                                    else:
+                                        st.warning(f"反馈提交失败: {err}")
+
+                                down_reason = c2.selectbox(
+                                    "👎 原因",
+                                    options=[
+                                        "答非所问",
+                                        "不准确",
+                                        "信息不足",
+                                        "太慢",
+                                        "其他",
+                                    ],
+                                    index=0,
+                                    key=f"fb_reason_{msg_id}",
+                                )
+                                if c2.button("提交差评", key=f"fb_down_{msg_id}"):
+                                    ok, err = _submit_feedback(
+                                        backend_url=backend_url,
+                                        session_id=st.session_state["session_id"],
+                                        question=message.get("question"),
+                                        answer=message.get("content", ""),
+                                        rating="down",
+                                        reason=down_reason,
+                                        meta=message.get("meta"),
+                                    )
+                                    if ok:
+                                        st.session_state["feedback_state"][msg_id] = {
+                                            "submitted": True,
+                                            "rating": "down",
+                                            "reason": down_reason,
+                                        }
+                                        st.rerun()
+                                    else:
+                                        st.warning(f"反馈提交失败: {err}")
+                            else:
+                                st.caption("反馈已提交，感谢你的反馈。")
+
+            prompt = st.chat_input("输入问题…")
+
+            if prompt:
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+                user_msg_id = str(uuid.uuid4())
+                st.session_state["message"].append(
+                    {"id": user_msg_id, "role": "user", "content": prompt}
+                )
+                st.session_state["memory"].chat_memory.add_user_message(prompt)
+
+                # 发送给后端的历史：包含已完成的上下文（不包含本轮的“正在生成”的回复）
+                history_payload: List[Dict[str, str]] = list(
+                    st.session_state["message"]
+                )
+
+                with st.chat_message("assistant"):
+                    with st.spinner("AI思考中..."):
+                        context_text = ""
+                        context_placeholder = st.empty()
+                        context_area = None
+
+                        answer_area = st.empty()
+                        current_answer = ""
+                        route_meta = None
+
+                        try:
+                            for event in _chat_stream_request(
                                 backend_url=backend_url,
                                 session_id=st.session_state["session_id"],
-                                question=message.get("question"),
-                                answer=message.get("content", ""),
-                                rating="up",
-                                reason=None,
-                                meta=message.get("meta"),
-                            )
-                            if ok:
-                                st.session_state["feedback_state"][msg_id] = {
-                                    "submitted": True,
-                                    "rating": "up",
-                                }
-                                st.rerun()
-                            else:
-                                st.warning(f"反馈提交失败: {err}")
+                                prompt=prompt,
+                                history=history_payload,
+                                k=k,
+                                use_llm=use_llm,
+                                use_reranker=use_reranker,
+                                persist_dir=persist_dir,
+                                collection_name=collection_name,
+                                embedding_model=embedding_model,
+                                llm_model=llm_model,
+                            ):
+                                event_type = event.get("type")
+                                event_content = event.get("content") or ""
 
-                        down_reason = c2.selectbox(
-                            "👎 原因",
-                            options=[
-                                "答非所问",
-                                "不准确",
-                                "信息不足",
-                                "太慢",
-                                "其他",
-                            ],
-                            index=0,
-                            key=f"fb_reason_{msg_id}",
-                        )
-                        if c2.button("提交差评", key=f"fb_down_{msg_id}"):
-                            ok, err = _submit_feedback(
-                                backend_url=backend_url,
-                                session_id=st.session_state["session_id"],
-                                question=message.get("question"),
-                                answer=message.get("content", ""),
-                                rating="down",
-                                reason=down_reason,
-                                meta=message.get("meta"),
-                            )
-                            if ok:
-                                st.session_state["feedback_state"][msg_id] = {
-                                    "submitted": True,
-                                    "rating": "down",
-                                    "reason": down_reason,
-                                }
-                                st.rerun()
-                            else:
-                                st.warning(f"反馈提交失败: {err}")
-                    else:
-                        st.caption("反馈已提交，感谢你的反馈。")
-
-    prompt = st.chat_input("输入问题…")
-
-    if prompt:
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        user_msg_id = str(uuid.uuid4())
-        st.session_state["message"].append(
-            {"id": user_msg_id, "role": "user", "content": prompt}
-        )
-        st.session_state["memory"].chat_memory.add_user_message(prompt)
-
-        # 发送给后端的历史：包含已完成的上下文（不包含本轮的“正在生成”的回复）
-        history_payload: List[Dict[str, str]] = list(st.session_state["message"])
-
-        with st.chat_message("assistant"):
-            with st.spinner("AI思考中..."):
-                context_text = ""
-                context_placeholder = st.empty()
-                context_area = None
-
-                answer_area = st.empty()
-                current_answer = ""
-                route_meta = None
-
-                try:
-                    for event in _chat_stream_request(
-                        backend_url=backend_url,
-                        session_id=st.session_state["session_id"],
-                        prompt=prompt,
-                        history=history_payload,
-                        k=k,
-                        use_llm=use_llm,
-                        use_reranker=use_reranker,
-                        persist_dir=persist_dir,
-                        collection_name=collection_name,
-                        embedding_model=embedding_model,
-                        llm_model=llm_model,
-                    ):
-                        event_type = event.get("type")
-                        event_content = event.get("content") or ""
-
-                        if event_type == "context":
-                            context_text = event_content
-                            # 降级为纯模型生成时，不展示“检索段落”栏位。
-                            if event_content.strip() and event_content.strip() != "没有检索到所需内容":
-                                with context_placeholder.container():
-                                    with st.expander("检索到的相关段落", expanded=False):
-                                        context_area = st.empty()
-                                        context_area.markdown(event_content)
-                            else:
-                                context_placeholder.empty()
-                        elif event_type == "answer":
-                            current_answer = event_content
+                                if event_type == "context":
+                                    context_text = event_content
+                                    # 降级为纯模型生成时，不展示“检索段落”栏位。
+                                    if (
+                                        event_content.strip()
+                                        and event_content.strip()
+                                        != "没有检索到所需内容"
+                                    ):
+                                        with context_placeholder.container():
+                                            with st.expander(
+                                                "检索到的相关段落", expanded=False
+                                            ):
+                                                context_area = st.empty()
+                                                context_area.markdown(event_content)
+                                    else:
+                                        context_placeholder.empty()
+                                elif event_type == "answer":
+                                    current_answer = event_content
+                                    answer_area.markdown(current_answer)
+                                elif event_type == "meta":
+                                    route_meta = event_content
+                                elif event_type == "done":
+                                    if not current_answer and event_content:
+                                        current_answer = event_content
+                                elif event_type == "error":
+                                    answer_area.markdown(f"错误：{event_content}")
+                                    current_answer = event_content
+                        except requests.RequestException as e:
+                            current_answer = f"后端请求失败：{e}"
                             answer_area.markdown(current_answer)
-                        elif event_type == "meta":
-                            route_meta = event_content
-                        elif event_type == "done":
-                            if not current_answer and event_content:
-                                current_answer = event_content
-                        elif event_type == "error":
-                            answer_area.markdown(f"错误：{event_content}")
-                            current_answer = event_content
-                except requests.RequestException as e:
-                    current_answer = f"后端请求失败：{e}"
-                    answer_area.markdown(current_answer)
-                finally:
-                    if route_meta:
-                        st.session_state["last_route_meta"] = route_meta
-                        route_mode = route_meta.get("route_mode", "-")
-                        trace_id = route_meta.get("trace_id", "-")
-                        match_score = route_meta.get("match_score")
-                        kb_max_score = route_meta.get("kb_max_score")
-                        topic = route_meta.get("topic", "-")
-                        match_gate = route_meta.get("match_gate")
-                        usable_threshold = route_meta.get("usable_threshold")
-                        knowledge_version = route_meta.get("knowledge_version", "-")
-                        if show_debug:
-                            st.markdown(
-                                """
+                        finally:
+                            if route_meta:
+                                st.session_state["last_route_meta"] = route_meta
+                                route_mode = route_meta.get("route_mode", "-")
+                                trace_id = route_meta.get("trace_id", "-")
+                                match_score = route_meta.get("match_score")
+                                kb_max_score = route_meta.get("kb_max_score")
+                                topic = route_meta.get("topic", "-")
+                                match_gate = route_meta.get("match_gate")
+                                usable_threshold = route_meta.get("usable_threshold")
+                                knowledge_version = route_meta.get(
+                                    "knowledge_version", "-"
+                                )
+                                if show_debug:
+                                    st.markdown(
+                                        """
 <div class="meta-box">
   <span class="chip">route: {route_mode}</span>
   <span class="chip">topic: {topic}</span>
@@ -483,59 +504,65 @@ def main():
   <span class="chip">trace: {trace_id}</span>
 </div>
 """.format(
-                                    route_mode=_safe_text(route_mode),
-                                    topic=_safe_text(topic),
-                                    match_score=_safe_text(match_score),
-                                    match_gate=_safe_text(match_gate),
-                                    kb_max_score=_safe_text(kb_max_score),
-                                    usable_threshold=_safe_text(usable_threshold),
-                                    knowledge_version=_safe_text(knowledge_version),
-                                    trace_id=_safe_text(trace_id),
-                                ),
-                                unsafe_allow_html=True,
-                            )
-                        source_refs = route_meta.get("source_refs") or []
-                        if source_refs:
-                            with st.container(border=True):
-                                st.markdown("#### 来源验证")
-                                for r in source_refs:
-                                    label = r.get("label", "来源")
-                                    hint = r.get("hint", "")
-                                    url = r.get("url", "")
-                                    if url:
-                                        st.markdown(f"- [{label}]({url})  \n  {hint}")
-                                    else:
-                                        st.markdown(f"- {label}  \n  {hint}")
+                                            route_mode=_safe_text(route_mode),
+                                            topic=_safe_text(topic),
+                                            match_score=_safe_text(match_score),
+                                            match_gate=_safe_text(match_gate),
+                                            kb_max_score=_safe_text(kb_max_score),
+                                            usable_threshold=_safe_text(
+                                                usable_threshold
+                                            ),
+                                            knowledge_version=_safe_text(
+                                                knowledge_version
+                                            ),
+                                            trace_id=_safe_text(trace_id),
+                                        ),
+                                        unsafe_allow_html=True,
+                                    )
+                                source_refs = route_meta.get("source_refs") or []
+                                if source_refs:
+                                    with st.container(border=True):
+                                        st.markdown("#### 来源验证")
+                                        for r in source_refs:
+                                            label = r.get("label", "来源")
+                                            hint = r.get("hint", "")
+                                            url = r.get("url", "")
+                                            if url:
+                                                st.markdown(
+                                                    f"- [{label}]({url})  \n  {hint}"
+                                                )
+                                            else:
+                                                st.markdown(f"- {label}  \n  {hint}")
 
-                        if route_meta.get("degraded"):
-                            suggestions = route_meta.get("suggestions") or []
-                            if suggestions:
-                                with st.container(border=True):
-                                    st.markdown("#### 当前为降级回答")
-                                    st.caption("建议这样提问以触发课件检索：")
-                                    for s in suggestions[:3]:
-                                        st.markdown(f"- {s}")
+                                if route_meta.get("degraded"):
+                                    suggestions = route_meta.get("suggestions") or []
+                                    if suggestions:
+                                        with st.container(border=True):
+                                            st.markdown("#### 当前为降级回答")
+                                            st.caption("建议这样提问以触发课件检索：")
+                                            for s in suggestions[:3]:
+                                                st.markdown(f"- {s}")
 
-        # 如果关闭了 LLM，只检索不生成：assistant 以检索内容作答（更适合简历演示）
-        if not current_answer.strip() and use_llm is False:
-            current_answer = context_text
+                # 如果关闭了 LLM，只检索不生成：assistant 以检索内容作答（更适合简历演示）
+                if not current_answer.strip() and use_llm is False:
+                    current_answer = context_text
 
-        if not current_answer.strip():
-            if not use_llm:
-                current_answer = context_text or "未检索到相关段落。"
-            else:
-                current_answer = "未获取到模型输出（请检查后端/网络/密钥）。"
+                if not current_answer.strip():
+                    if not use_llm:
+                        current_answer = context_text or "未检索到相关段落。"
+                    else:
+                        current_answer = "未获取到模型输出（请检查后端/网络/密钥）。"
 
-        st.session_state["message"].append(
-            {
-                "id": str(uuid.uuid4()),
-                "role": "assistant",
-                "content": current_answer,
-                "question": prompt,
-                "meta": route_meta,
-            }
-        )
-        st.session_state["memory"].chat_memory.add_ai_message(current_answer)
+                st.session_state["message"].append(
+                    {
+                        "id": str(uuid.uuid4()),
+                        "role": "assistant",
+                        "content": current_answer,
+                        "question": prompt,
+                        "meta": route_meta,
+                    }
+                )
+                st.session_state["memory"].chat_memory.add_ai_message(current_answer)
 
 
 if __name__ == "__main__":
