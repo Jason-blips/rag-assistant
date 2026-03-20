@@ -303,8 +303,22 @@ def main():
                         trace_id = route_meta.get("trace_id", "-")
                         match_score = route_meta.get("match_score")
                         kb_max_score = route_meta.get("kb_max_score")
+                        topic = route_meta.get("topic", "-")
+                        match_gate = route_meta.get("match_gate")
+                        usable_threshold = route_meta.get("usable_threshold")
                         st.caption(
-                            f"路由: `{route_mode}` | match_score={match_score} | kb_max_score={kb_max_score} | trace_id={trace_id}"
+                    "路由: `{route_mode}` | topic={topic} | match_score={match_score} | "
+                    "match_gate={match_gate} | kb_max_score={kb_max_score} | "
+                    "usable_threshold={usable_threshold} | trace_id={trace_id}"
+                    .format(
+                        route_mode=route_mode,
+                        topic=topic,
+                        match_score=match_score,
+                        match_gate=match_gate,
+                        kb_max_score=kb_max_score,
+                        usable_threshold=usable_threshold,
+                        trace_id=trace_id,
+                    )
                         )
                         source_refs = route_meta.get("source_refs") or []
                         if source_refs:

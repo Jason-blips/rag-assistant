@@ -26,11 +26,16 @@ from langchain_core.documents import Document
 app = FastAPI(title="RAG Chat Backend（流式 SSE）")
 
 #
-# 双阈值策略：
-# - 触发阈值：低于 0.3 不检索
-# - 可用阈值：触发检索后，若 top-k(KB) 最高分仍低于 0.5，则检索内容不喂给 LLM（直接走纯 LLM 生成）
-RETRIEVAL_MATCH_GATE = 0.30
-RETRIEVAL_USABLE_THRESHOLD = 0.50
+# 动态双阈值策略（按 topic 调参）：
+# - match_gate: 决定是否触发检索
+# - usable_threshold: 决定检索结果能否用于增强生成
+TOPIC_THRESHOLDS = {
+    "uml": {"match_gate": 0.30, "usable_threshold": 0.50},
+    "sql": {"match_gate": 0.25, "usable_threshold": 0.35},
+    "er": {"match_gate": 0.25, "usable_threshold": 0.40},
+    "algorithm": {"match_gate": 0.30, "usable_threshold": 0.45},
+    "general": {"match_gate": 0.35, "usable_threshold": 0.55},
+}
 LOG_DIR = Path(__file__).resolve().parent / "logs"
 ROUTING_LOG_PATH = LOG_DIR / "routing_events.jsonl"
 FEEDBACK_LOG_PATH = LOG_DIR / "feedback_events.jsonl"
@@ -179,6 +184,11 @@ def _append_feedback_log(event: Dict[str, Any]) -> None:
         pass
 
 
+def _thresholds_for_topic(topic: str) -> tuple[float, float]:
+    cfg = TOPIC_THRESHOLDS.get(topic, TOPIC_THRESHOLDS["general"])
+    return float(cfg["match_gate"]), float(cfg["usable_threshold"])
+
+
 def _build_source_suffix(docs, llm_model: str) -> str:
     """
     给最终回答附加来源标识：
@@ -261,7 +271,8 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
     t0 = time.perf_counter()
 
     match_score, inferred_topic = compute_course_match_score(req.question)
-    should_retrieve = match_score >= RETRIEVAL_MATCH_GATE
+    match_gate, usable_threshold = _thresholds_for_topic(inferred_topic)
+    should_retrieve = match_score >= match_gate
     route_mode = "retrieval" if should_retrieve else "direct_llm"
     kb_max_score = None
     degrade_reason = None
@@ -294,6 +305,9 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
                     "question": req.question,
                     "session_id": req.session_id,
                     "match_score": round(match_score, 4),
+                    "topic": inferred_topic,
+                    "match_gate": match_gate,
+                    "usable_threshold": usable_threshold,
                     "route_mode": route_mode,
                 }
             )
@@ -351,6 +365,9 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
                     "question": req.question,
                     "session_id": req.session_id,
                     "match_score": round(match_score, 4),
+                    "topic": inferred_topic,
+                    "match_gate": match_gate,
+                    "usable_threshold": usable_threshold,
                     "route_mode": route_mode,
                 }
             )
@@ -360,12 +377,12 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
         if kb_scores is not None and kb_docs:
             # 仅以课件向量集合的得分判断是否可用。
             kb_max_score = max(kb_scores)
-            if kb_max_score < RETRIEVAL_USABLE_THRESHOLD:
+            if kb_max_score < usable_threshold:
                 docs = []
                 scores = None
                 route_mode = "degraded_low_kb_score"
                 degrade_reason = (
-                    f"kb_max_score={kb_max_score:.4f} < {RETRIEVAL_USABLE_THRESHOLD:.2f}"
+                    f"kb_max_score={kb_max_score:.4f} < {usable_threshold:.2f}"
                 )
             else:
                 # KB 可用时，将“最近 3 轮对话片段 + KB 候选”一起重排，增强上下文关联。
@@ -431,6 +448,9 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
                 "route_mode": route_mode,
                 "match_score": round(match_score, 4),
                 "kb_max_score": round(kb_max_score, 4) if kb_max_score is not None else None,
+                "topic": inferred_topic,
+                "match_gate": match_gate,
+                "usable_threshold": usable_threshold,
                 "source_refs": source_refs,
                 "degraded": degraded,
                 "suggestions": suggestions,
@@ -448,6 +468,9 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
                 "session_id": req.session_id,
                 "match_score": round(match_score, 4),
                 "kb_max_score": round(kb_max_score, 4) if kb_max_score is not None else None,
+                "topic": inferred_topic,
+                "match_gate": match_gate,
+                "usable_threshold": usable_threshold,
                 "route_mode": route_mode,
                 "degrade_reason": degrade_reason,
                 "used_llm": False,
@@ -523,6 +546,9 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
                 "session_id": req.session_id,
                 "match_score": round(match_score, 4),
                 "kb_max_score": round(kb_max_score, 4) if kb_max_score is not None else None,
+                "topic": inferred_topic,
+                "match_gate": match_gate,
+                "usable_threshold": usable_threshold,
                 "route_mode": route_mode,
                 "degrade_reason": degrade_reason,
                 "used_llm": True,
@@ -543,6 +569,9 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
                 "session_id": req.session_id,
                 "match_score": round(match_score, 4),
                 "kb_max_score": round(kb_max_score, 4) if kb_max_score is not None else None,
+                "topic": inferred_topic,
+                "match_gate": match_gate,
+                "usable_threshold": usable_threshold,
                 "route_mode": route_mode,
                 "degrade_reason": degrade_reason,
                 "elapsed_ms": int((time.perf_counter() - t0) * 1000),
