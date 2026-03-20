@@ -109,19 +109,41 @@ def _submit_feedback(
         return False, str(e)
 
 
-def main():
-    st.set_page_config(page_title="智能客服", layout="wide")
+def _inject_ui_style() -> None:
     st.markdown(
         """
 <style>
-    .stChatMessage {padding-top: 0.35rem; padding-bottom: 0.35rem;}
+    .stApp {background: #f8fafc;}
+    .block-container {padding-top: 1.2rem; padding-bottom: 1.2rem;}
+    .stChatMessage {padding-top: 0.45rem; padding-bottom: 0.45rem;}
     .stCodeBlock {border-radius: 10px;}
+    .app-header {
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 0.75rem 1rem;
+        background: white;
+        margin-bottom: 0.75rem;
+    }
+    .app-subtitle {color: #475569; font-size: 0.92rem;}
+    .status-pill {
+        display: inline-block;
+        border-radius: 999px;
+        padding: 0.2rem 0.6rem;
+        font-size: 0.8rem;
+        border: 1px solid #cbd5e1;
+        margin-left: 0.45rem;
+        color: #334155;
+        background: #f1f5f9;
+    }
 </style>
 """,
         unsafe_allow_html=True,
     )
-    st.title("智能客服")
-    st.divider()
+
+
+def main():
+    st.set_page_config(page_title="智能客服", layout="wide")
+    _inject_ui_style()
 
     if "session_id" not in st.session_state:
         st.session_state["session_id"] = str(uuid.uuid4())
@@ -141,25 +163,42 @@ def main():
         st.session_state["feedback_state"] = {}
 
     default_persist = str(DEFAULT_PERSIST_DIR)
+    backend_default = "http://127.0.0.1:8000"
+    backend_status = _backend_reachable(backend_default)
+    status_text = "后端已连接" if backend_status else "后端未连接"
+    st.markdown(
+        f"""
+<div class="app-header">
+  <div style="font-size:1.3rem;font-weight:700;">智能客服
+    <span class="status-pill">{status_text}</span>
+  </div>
+  <div class="app-subtitle">基于课程知识库的检索增强问答，支持流式输出、来源追踪与降级生成。</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
 
     with st.sidebar:
-        st.subheader("检索与模型")
-        backend_url = st.text_input("后端地址（FastAPI）", value="http://127.0.0.1:8000")
+        st.subheader("控制台")
+        backend_url = st.text_input("后端地址（FastAPI）", value=backend_default)
         if _backend_reachable(backend_url):
             st.success("后端状态：已连接")
         else:
             st.error("后端状态：未连接")
-        persist_dir = st.text_input("向量库目录", value=default_persist)
-        collection_name = st.text_input(
-            "Collection 名称", value=DEFAULT_COLLECTION_NAME
-        )
-        embedding_model = st.text_input(
-            "Embedding 模型名", value=DEFAULT_EMBEDDING_MODEL_NAME
-        )
-        llm_model = st.text_input("LLM 模型名（DashScope）", value="qwen-turbo")
-        k = st.slider("检索段落数 k", min_value=1, max_value=10, value=3)
-        use_llm = st.checkbox("调用 LLM 生成汇总回答", value=True)
-        use_reranker = st.checkbox("启用 Cross-Encoder 重排序", value=True)
+        st.caption(f"Session ID: `{st.session_state['session_id'][:8]}`")
+        with st.expander("检索参数", expanded=True):
+            k = st.slider("检索段落数 k", min_value=1, max_value=10, value=3)
+            use_llm = st.checkbox("调用 LLM 生成汇总回答", value=True)
+            use_reranker = st.checkbox("启用 Cross-Encoder 重排序", value=True)
+        with st.expander("模型与存储", expanded=False):
+            persist_dir = st.text_input("向量库目录", value=default_persist)
+            collection_name = st.text_input(
+                "Collection 名称", value=DEFAULT_COLLECTION_NAME
+            )
+            embedding_model = st.text_input(
+                "Embedding 模型名", value=DEFAULT_EMBEDDING_MODEL_NAME
+            )
+            llm_model = st.text_input("LLM 模型名（DashScope）", value="qwen-turbo")
         if st.button("清空会话", use_container_width=True):
             st.session_state["message"] = [
                 {"role": "assistant", "content": "您好，有什么可以帮助你？"}
@@ -308,19 +347,18 @@ def main():
                         usable_threshold = route_meta.get("usable_threshold")
                         knowledge_version = route_meta.get("knowledge_version", "-")
                         st.caption(
-                    "路由: `{route_mode}` | topic={topic} | match_score={match_score} | "
-                    "match_gate={match_gate} | kb_max_score={kb_max_score} | "
-                            "usable_threshold={usable_threshold} | kv={knowledge_version} | trace_id={trace_id}"
-                    .format(
-                        route_mode=route_mode,
-                        topic=topic,
-                        match_score=match_score,
-                        match_gate=match_gate,
-                        kb_max_score=kb_max_score,
-                        usable_threshold=usable_threshold,
+                            "路由: `{route_mode}` | topic={topic} | match_score={match_score} | "
+                            "match_gate={match_gate} | kb_max_score={kb_max_score} | "
+                            "usable_threshold={usable_threshold} | kv={knowledge_version} | trace_id={trace_id}".format(
+                                route_mode=route_mode,
+                                topic=topic,
+                                match_score=match_score,
+                                match_gate=match_gate,
+                                kb_max_score=kb_max_score,
+                                usable_threshold=usable_threshold,
                                 knowledge_version=knowledge_version,
-                        trace_id=trace_id,
-                    )
+                                trace_id=trace_id,
+                            )
                         )
                         source_refs = route_meta.get("source_refs") or []
                         if source_refs:
