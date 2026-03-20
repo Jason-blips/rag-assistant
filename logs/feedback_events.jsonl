@@ -1,0 +1,1 @@
+{"timestamp": "2026-03-20T13:28:48.927174Z", "trace_id": "t1", "session_id": "s1", "question": "q", "answer": "a", "rating": "up", "reason": null, "route_mode": "direct_llm", "match_score": 0.1, "kb_max_score": null}

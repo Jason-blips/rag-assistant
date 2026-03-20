@@ -33,6 +33,7 @@ RETRIEVAL_MATCH_GATE = 0.30
 RETRIEVAL_USABLE_THRESHOLD = 0.50
 LOG_DIR = Path(__file__).resolve().parent / "logs"
 ROUTING_LOG_PATH = LOG_DIR / "routing_events.jsonl"
+FEEDBACK_LOG_PATH = LOG_DIR / "feedback_events.jsonl"
 
 
 class ChatMessage(BaseModel):
@@ -53,6 +54,18 @@ class ChatRequest(BaseModel):
     collection_name: str = DEFAULT_COLLECTION_NAME
     embedding_model: str = DEFAULT_EMBEDDING_MODEL_NAME
     llm_model: str = "qwen-turbo"
+
+
+class FeedbackRequest(BaseModel):
+    trace_id: str | None = None
+    session_id: str
+    question: str | None = None
+    answer: str
+    rating: str  # "up" | "down"
+    reason: str | None = None
+    route_mode: str | None = None
+    match_score: float | None = None
+    kb_max_score: float | None = None
 
 
 def _load_db(
@@ -154,6 +167,15 @@ def _append_routing_log(event: Dict[str, Any]) -> None:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
     except Exception:
         # 日志写入失败不应影响主流程
+        pass
+
+
+def _append_feedback_log(event: Dict[str, Any]) -> None:
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(FEEDBACK_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except Exception:
         pass
 
 
@@ -482,6 +504,27 @@ def chat_stream(req: ChatRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.post("/feedback")
+def submit_feedback(req: FeedbackRequest):
+    if req.rating not in {"up", "down"}:
+        return {"ok": False, "error": "rating must be 'up' or 'down'"}
+    _append_feedback_log(
+        {
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "trace_id": req.trace_id,
+            "session_id": req.session_id,
+            "question": req.question,
+            "answer": req.answer,
+            "rating": req.rating,
+            "reason": req.reason,
+            "route_mode": req.route_mode,
+            "match_score": req.match_score,
+            "kb_max_score": req.kb_max_score,
+        }
+    )
+    return {"ok": True}
 
 
 if __name__ == "__main__":

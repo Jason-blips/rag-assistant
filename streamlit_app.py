@@ -77,6 +77,38 @@ def _backend_reachable(backend_url: str) -> bool:
         return False
 
 
+def _submit_feedback(
+    *,
+    backend_url: str,
+    session_id: str,
+    question: str | None,
+    answer: str,
+    rating: str,
+    reason: str | None,
+    meta: Dict[str, Any] | None,
+) -> tuple[bool, str]:
+    payload = {
+        "trace_id": (meta or {}).get("trace_id"),
+        "session_id": session_id,
+        "question": question,
+        "answer": answer,
+        "rating": rating,
+        "reason": reason,
+        "route_mode": (meta or {}).get("route_mode"),
+        "match_score": (meta or {}).get("match_score"),
+        "kb_max_score": (meta or {}).get("kb_max_score"),
+    }
+    try:
+        r = requests.post(f"{backend_url}/feedback", json=payload, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        if not data.get("ok", False):
+            return False, data.get("error", "unknown feedback error")
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
 def main():
     st.set_page_config(page_title="智能客服", layout="wide")
     st.markdown(
@@ -105,6 +137,8 @@ def main():
         st.session_state["memory"] = ConversationBufferMemory(
             return_messages=True,
         )
+    if "feedback_state" not in st.session_state:
+        st.session_state["feedback_state"] = {}
 
     default_persist = str(DEFAULT_PERSIST_DIR)
 
@@ -138,13 +172,75 @@ def main():
     for message in st.session_state["message"]:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
+            if message["role"] == "assistant" and message.get("content"):
+                msg_id = message.get("id")
+                if msg_id:
+                    fb = st.session_state["feedback_state"].get(msg_id, {})
+                    submitted = fb.get("submitted", False)
+                    if not submitted:
+                        c1, c2 = st.columns([1, 1])
+                        if c1.button("👍 有帮助", key=f"fb_up_{msg_id}"):
+                            ok, err = _submit_feedback(
+                                backend_url=backend_url,
+                                session_id=st.session_state["session_id"],
+                                question=message.get("question"),
+                                answer=message.get("content", ""),
+                                rating="up",
+                                reason=None,
+                                meta=message.get("meta"),
+                            )
+                            if ok:
+                                st.session_state["feedback_state"][msg_id] = {
+                                    "submitted": True,
+                                    "rating": "up",
+                                }
+                                st.rerun()
+                            else:
+                                st.warning(f"反馈提交失败: {err}")
+
+                        down_reason = c2.selectbox(
+                            "👎 原因",
+                            options=[
+                                "答非所问",
+                                "不准确",
+                                "信息不足",
+                                "太慢",
+                                "其他",
+                            ],
+                            index=0,
+                            key=f"fb_reason_{msg_id}",
+                        )
+                        if c2.button("提交差评", key=f"fb_down_{msg_id}"):
+                            ok, err = _submit_feedback(
+                                backend_url=backend_url,
+                                session_id=st.session_state["session_id"],
+                                question=message.get("question"),
+                                answer=message.get("content", ""),
+                                rating="down",
+                                reason=down_reason,
+                                meta=message.get("meta"),
+                            )
+                            if ok:
+                                st.session_state["feedback_state"][msg_id] = {
+                                    "submitted": True,
+                                    "rating": "down",
+                                    "reason": down_reason,
+                                }
+                                st.rerun()
+                            else:
+                                st.warning(f"反馈提交失败: {err}")
+                    else:
+                        st.caption("反馈已提交，感谢你的反馈。")
 
     prompt = st.chat_input("输入问题…")
 
     if prompt:
         with st.chat_message("user"):
             st.markdown(prompt)
-        st.session_state["message"].append({"role": "user", "content": prompt})
+        user_msg_id = str(uuid.uuid4())
+        st.session_state["message"].append(
+            {"id": user_msg_id, "role": "user", "content": prompt}
+        )
         st.session_state["memory"].chat_memory.add_user_message(prompt)
 
         # 发送给后端的历史：包含已完成的上下文（不包含本轮的“正在生成”的回复）
@@ -222,7 +318,13 @@ def main():
                 current_answer = "未获取到模型输出（请检查后端/网络/密钥）。"
 
         st.session_state["message"].append(
-            {"role": "assistant", "content": current_answer}
+            {
+                "id": str(uuid.uuid4()),
+                "role": "assistant",
+                "content": current_answer,
+                "question": prompt,
+                "meta": route_meta,
+            }
         )
         st.session_state["memory"].chat_memory.add_ai_message(current_answer)
 
