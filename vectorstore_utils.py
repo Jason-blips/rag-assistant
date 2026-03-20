@@ -1,4 +1,7 @@
 from pathlib import Path
+from datetime import datetime, timezone
+import hashlib
+import json
 import pickle
 from typing import Iterable, Optional
 
@@ -22,6 +25,7 @@ DEFAULT_EMBEDDING_MODEL_NAME = "BAAI/bge-small-zh-v1.5"
 DEFAULT_CHUNK_SIZE = 500
 DEFAULT_CHUNK_OVERLAP = 100
 BM25_CORPUS_FILENAME = "bm25_corpus.pkl"
+KNOWLEDGE_MANIFEST_FILENAME = "knowledge_manifest.json"
 DEFAULT_BM25_WEIGHT = 0.4
 DEFAULT_VECTOR_WEIGHT = 0.6
 RRF_K = 60  # Reciprocal Rank Fusion 常数
@@ -253,6 +257,62 @@ def get_embeddings(model_name: Optional[str] = None) -> HuggingFaceEmbeddings:
 
 def _bm25_corpus_path(persist_directory: Path | str) -> Path:
     return Path(persist_directory) / BM25_CORPUS_FILENAME
+
+
+def _knowledge_manifest_path(persist_directory: Path | str) -> Path:
+    return Path(persist_directory) / KNOWLEDGE_MANIFEST_FILENAME
+
+
+def _compute_knowledge_version(pdf_paths: list[Path]) -> str:
+    digest = hashlib.sha1()
+    for p in sorted(pdf_paths, key=lambda x: str(x).lower()):
+        stat = p.stat()
+        digest.update(str(p.resolve()).encode("utf-8", errors="ignore"))
+        digest.update(str(stat.st_size).encode("ascii"))
+        digest.update(str(stat.st_mtime_ns).encode("ascii"))
+    return digest.hexdigest()[:12]
+
+
+def write_knowledge_manifest(
+    *,
+    persist_directory: Path | str,
+    collection_name: str,
+    embedding_model: str,
+    chunk_size: int,
+    chunk_overlap: int,
+    pdf_paths: list[Path],
+    chunk_count: int,
+    knowledge_version: str | None = None,
+) -> dict:
+    built_at = datetime.now(timezone.utc).isoformat()
+    version = knowledge_version or _compute_knowledge_version(pdf_paths)
+    data = {
+        "knowledge_version": version,
+        "built_at": built_at,
+        "pdf_count": len(pdf_paths),
+        "chunk_count": chunk_count,
+        "collection_name": collection_name,
+        "embedding_model": embedding_model,
+        "chunk_size": chunk_size,
+        "chunk_overlap": chunk_overlap,
+        "files": [str(p.resolve()) for p in sorted(pdf_paths, key=lambda x: str(x).lower())],
+    }
+    path = _knowledge_manifest_path(persist_directory)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return data
+
+
+def load_knowledge_manifest(persist_directory: Path | str = DEFAULT_PERSIST_DIR) -> dict | None:
+    path = _knowledge_manifest_path(persist_directory)
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
 
 
 def save_bm25_corpus(
@@ -678,6 +738,7 @@ def build_vectorstore_from_pdf(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
     course_name: Optional[str] = None,
+    knowledge_version: str | None = None,
 ) -> Chroma:
     """
     从指定 PDF 构建并（可能是增量）写入 Chroma 向量库。
@@ -686,8 +747,10 @@ def build_vectorstore_from_pdf(
     这更适合“多个课件组成一个大知识库”的场景。
     """
     pdf_path = Path(pdf_path)
+    version = knowledge_version or _compute_knowledge_version([pdf_path])
     extra_meta = {
         "source": str(pdf_path),
+        "knowledge_version": version,
     }
     if course_name:
         extra_meta["course"] = course_name
@@ -706,6 +769,16 @@ def build_vectorstore_from_pdf(
     )
     db.add_documents(texts)
     save_bm25_corpus(texts, persist_directory=persist_directory, append=True)
+    write_knowledge_manifest(
+        persist_directory=persist_directory,
+        collection_name=collection_name,
+        embedding_model=model_name or DEFAULT_EMBEDDING_MODEL_NAME,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        pdf_paths=[pdf_path],
+        chunk_count=len(texts),
+        knowledge_version=version,
+    )
     return db
 
 
@@ -716,6 +789,7 @@ def build_vectorstore_from_pdf_dir(
     collection_name: str = DEFAULT_COLLECTION_NAME,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+    knowledge_version: str | None = None,
 ) -> Chroma:
     """
     从一个目录下批量导入多个 PDF，构建/增量更新课程知识库。
@@ -735,11 +809,11 @@ def build_vectorstore_from_pdf_dir(
     )
 
     pdf_paths: Iterable[Path] = pdf_root_dir.rglob("*.pdf")
+    pdf_file_list = [p for p in pdf_paths if p.is_file()]
+    version = knowledge_version or _compute_knowledge_version(pdf_file_list)
     all_texts: list[Document] = []
     count = 0
-    for pdf_path in pdf_paths:
-        if not pdf_path.is_file():
-            continue
+    for pdf_path in pdf_file_list:
 
         try:
             rel = pdf_path.relative_to(pdf_root_dir)
@@ -751,6 +825,7 @@ def build_vectorstore_from_pdf_dir(
         extra_meta = {
             "source": str(pdf_path),
             "course": course_name,
+            "knowledge_version": version,
         }
 
         texts = get_text_chunks_from_pdf(
@@ -770,6 +845,16 @@ def build_vectorstore_from_pdf_dir(
         raise RuntimeError(f"在目录 {pdf_root_dir.resolve()} 下未找到任何 PDF 文件。")
 
     save_bm25_corpus(all_texts, persist_directory=persist_directory, append=False)
+    write_knowledge_manifest(
+        persist_directory=persist_directory,
+        collection_name=collection_name,
+        embedding_model=model_name or DEFAULT_EMBEDDING_MODEL_NAME,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        pdf_paths=pdf_file_list,
+        chunk_count=len(all_texts),
+        knowledge_version=version,
+    )
     return db
 
 

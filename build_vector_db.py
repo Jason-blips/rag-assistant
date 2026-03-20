@@ -11,6 +11,7 @@ from vectorstore_utils import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_EMBEDDING_MODEL_NAME,
+    load_knowledge_manifest,
 )
 
 
@@ -74,6 +75,12 @@ def main() -> None:
         default=DEFAULT_CHUNK_OVERLAP,
         help=f"切分重叠大小（默认: {DEFAULT_CHUNK_OVERLAP}）",
     )
+    parser.add_argument(
+        "--knowledge-version",
+        type=str,
+        default=None,
+        help="可选：手动指定知识版本号（不传则按 PDF 内容自动生成）",
+    )
 
     args = parser.parse_args()
 
@@ -90,6 +97,7 @@ def main() -> None:
             chunk_size=args.chunk_size,
             chunk_overlap=args.chunk_overlap,
             course_name=pdf_path.parent.name,
+            knowledge_version=args.knowledge_version,
         )
         print(f"✅ 向量数据库构建/更新完成！")
         print(f"   PDF: {pdf_path.resolve()}")
@@ -103,12 +111,17 @@ def main() -> None:
             collection_name=args.collection,
             chunk_size=args.chunk_size,
             chunk_overlap=args.chunk_overlap,
+            knowledge_version=args.knowledge_version,
         )
         print(f"✅ 向量数据库批量构建/更新完成！")
         print(f"   知识库目录: {pdf_root.resolve()}")
     print(f"   向量库目录: {persist_dir.resolve()}")
     print(f"   Collection: {args.collection}")
     print(f"   Embedding: {args.embedding_model}")
+    manifest = load_knowledge_manifest(persist_dir)
+    if manifest:
+        print(f"   Knowledge Version: {manifest.get('knowledge_version')}")
+        print(f"   Built At (UTC): {manifest.get('built_at')}")
 
 
 if __name__ == "__main__":

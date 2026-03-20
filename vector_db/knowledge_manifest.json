@@ -1,0 +1,13 @@
+{
+  "knowledge_version": "8e2d2f4148e1",
+  "built_at": "2026-03-20T15:08:00.594097+00:00",
+  "pdf_count": 1,
+  "chunk_count": 76,
+  "collection_name": "langchain",
+  "embedding_model": "BAAI/bge-small-zh-v1.5",
+  "chunk_size": 500,
+  "chunk_overlap": 100,
+  "files": [
+    "D:\\rag_study\\knowledge_base\\data_week6.pdf"
+  ]
+}

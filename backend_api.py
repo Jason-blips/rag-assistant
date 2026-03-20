@@ -17,6 +17,7 @@ from vectorstore_utils import (
     DEFAULT_EMBEDDING_MODEL_NAME,
     DEFAULT_PERSIST_DIR,
     compute_course_match_score,
+    load_knowledge_manifest,
     load_vectorstore,
     rerank,
 )
@@ -279,6 +280,10 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
 
     docs = []
     scores = None
+    knowledge_version = "unknown"
+    manifest = load_knowledge_manifest(req.persist_dir)
+    if manifest and manifest.get("knowledge_version"):
+        knowledge_version = str(manifest.get("knowledge_version"))
     kb_db = None
     conv_db = None
 
@@ -308,6 +313,7 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
                     "topic": inferred_topic,
                     "match_gate": match_gate,
                     "usable_threshold": usable_threshold,
+                    "knowledge_version": knowledge_version,
                     "route_mode": route_mode,
                 }
             )
@@ -368,6 +374,7 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
                     "topic": inferred_topic,
                     "match_gate": match_gate,
                     "usable_threshold": usable_threshold,
+                    "knowledge_version": knowledge_version,
                     "route_mode": route_mode,
                 }
             )
@@ -451,6 +458,7 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
                 "topic": inferred_topic,
                 "match_gate": match_gate,
                 "usable_threshold": usable_threshold,
+                "knowledge_version": knowledge_version,
                 "source_refs": source_refs,
                 "degraded": degraded,
                 "suggestions": suggestions,
@@ -471,6 +479,7 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
                 "topic": inferred_topic,
                 "match_gate": match_gate,
                 "usable_threshold": usable_threshold,
+                "knowledge_version": knowledge_version,
                 "route_mode": route_mode,
                 "degrade_reason": degrade_reason,
                 "used_llm": False,
@@ -549,6 +558,7 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
                 "topic": inferred_topic,
                 "match_gate": match_gate,
                 "usable_threshold": usable_threshold,
+                "knowledge_version": knowledge_version,
                 "route_mode": route_mode,
                 "degrade_reason": degrade_reason,
                 "used_llm": True,
@@ -572,6 +582,7 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
                 "topic": inferred_topic,
                 "match_gate": match_gate,
                 "usable_threshold": usable_threshold,
+                "knowledge_version": knowledge_version,
                 "route_mode": route_mode,
                 "degrade_reason": degrade_reason,
                 "elapsed_ms": int((time.perf_counter() - t0) * 1000),
