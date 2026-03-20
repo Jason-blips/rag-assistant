@@ -205,11 +205,62 @@ def _build_source_suffix(docs, llm_model: str) -> str:
     return f"该问题回答由 {llm_model} 模型生成"
 
 
+def _build_source_refs(docs) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = []
+    for i, d in enumerate(docs or []):
+        md = getattr(d, "metadata", None) or {}
+        if md.get("doc_type") != "kb":
+            continue
+        source = md.get("source") or md.get("file_path") or ""
+        page = md.get("page")
+        hint = _doc_source_hint(d)
+        label = f"段落{i + 1}"
+        if page is not None:
+            try:
+                label += f" · p{int(page) + 1}"
+            except Exception:
+                label += f" · p{page}"
+
+        file_url = ""
+        if source:
+            src = str(source).replace("\\", "/")
+            if src.startswith("/"):
+                file_url = f"file://{src}"
+            else:
+                file_url = f"file:///{src}"
+            if page is not None:
+                file_url += f"#page={page}"
+
+        refs.append({"label": label, "hint": hint, "url": file_url})
+    return refs
+
+
+def _build_degrade_suggestions(question: str, topic: str) -> list[str]:
+    base = [
+        "请把问题改写为课件术语（如“UML 类图中的类代表什么”）。",
+        "请补充章节名、关键词或页码后再提问。",
+        "如果你想要通用解答，可明确写“无需课件依据，给通用答案”。",
+    ]
+    if topic == "sql":
+        return [
+            "可尝试：课件中 SQL 的 SELECT / WHERE 示例是什么？",
+            "可尝试：课件里 passenger 与 class_table 的 JOIN 如何写？",
+            *base,
+        ]
+    if topic == "uml":
+        return [
+            "可尝试：课件里 UML association 与 inheritance 的区别是什么？",
+            "可尝试：课件中 UML 类图类的定义在哪一页？",
+            *base,
+        ]
+    return base
+
+
 def _chat_stream(req: ChatRequest) -> Iterator[str]:
     trace_id = str(uuid.uuid4())
     t0 = time.perf_counter()
 
-    match_score, _ = compute_course_match_score(req.question)
+    match_score, inferred_topic = compute_course_match_score(req.question)
     should_retrieve = match_score >= RETRIEVAL_MATCH_GATE
     route_mode = "retrieval" if should_retrieve else "direct_llm"
     kb_max_score = None
@@ -369,6 +420,9 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
         degrade_reason = "match_score_below_gate"
 
     context_text = _format_docs_for_display(docs, scores)
+    source_refs = _build_source_refs(docs)
+    degraded = route_mode != "retrieval"
+    suggestions = _build_degrade_suggestions(req.question, inferred_topic) if degraded else []
     yield _sse_event(
         {
             "type": "meta",
@@ -377,6 +431,9 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
                 "route_mode": route_mode,
                 "match_score": round(match_score, 4),
                 "kb_max_score": round(kb_max_score, 4) if kb_max_score is not None else None,
+                "source_refs": source_refs,
+                "degraded": degraded,
+                "suggestions": suggestions,
             },
         }
     )

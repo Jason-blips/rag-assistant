@@ -306,6 +306,24 @@ def main():
                         st.caption(
                             f"路由: `{route_mode}` | match_score={match_score} | kb_max_score={kb_max_score} | trace_id={trace_id}"
                         )
+                        source_refs = route_meta.get("source_refs") or []
+                        if source_refs:
+                            with st.expander("来源验证", expanded=False):
+                                for r in source_refs:
+                                    label = r.get("label", "来源")
+                                    hint = r.get("hint", "")
+                                    url = r.get("url", "")
+                                    if url:
+                                        st.markdown(f"- [{label}]({url})  \n  {hint}")
+                                    else:
+                                        st.markdown(f"- {label}  \n  {hint}")
+
+                        if route_meta.get("degraded"):
+                            suggestions = route_meta.get("suggestions") or []
+                            if suggestions:
+                                st.info("当前为降级回答，建议这样提问以触发课件检索：")
+                                for s in suggestions[:3]:
+                                    st.markdown(f"- {s}")
 
         # 如果关闭了 LLM，只检索不生成：assistant 以检索内容作答（更适合简历演示）
         if not current_answer.strip() and use_llm is False:
