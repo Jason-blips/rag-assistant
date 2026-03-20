@@ -113,32 +113,172 @@ def _inject_ui_style() -> None:
     st.markdown(
         """
 <style>
-    .stApp {background: #f8fafc;}
-    .block-container {padding-top: 1.2rem; padding-bottom: 1.2rem;}
-    .stChatMessage {padding-top: 0.45rem; padding-bottom: 0.45rem;}
-    .stCodeBlock {border-radius: 10px;}
-    .app-header {
-        border: 1px solid #e2e8f0;
-        border-radius: 12px;
-        padding: 0.75rem 1rem;
-        background: white;
-        margin-bottom: 0.75rem;
+    :root {
+        --bg-top: #c7d2fe;
+        --bg-mid: #e0e7ff;
+        --surface: #ffffff;
+        --text: #0f172a;
+        --muted: #475569;
+        --brand: #4f46e5;
+        --brand-dark: #3730a3;
+        --brand-glow: #6366f1;
+        --accent-violet: #7c3aed;
     }
-    .app-subtitle {color: #475569; font-size: 0.92rem;}
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    [data-testid="stSidebar"] {display: none;}
+    [data-testid="collapsedControl"] {display: none;}
+    .stApp {
+        background: linear-gradient(165deg, var(--bg-top) 0%, var(--bg-mid) 28%, #f1f5f9 72%, #f8fafc 100%) !important;
+        color: var(--text) !important;
+    }
+    .block-container {padding-top: 2rem; padding-bottom: 2.5rem; max-width: 920px;}
+    .stMarkdown, .stMarkdown p {color: var(--text) !important;}
+    .stCodeBlock {border-radius: 10px; border: 1px solid #c7d2fe !important;}
+    [data-testid="stChatMessage"] {
+        border-radius: 14px !important;
+        border: 1px solid #94a3b8 !important;
+        background: #ffffff !important;
+        padding: 0.55rem 1rem !important;
+        margin-bottom: 0.75rem !important;
+        box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08) !important;
+    }
+    [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
+        background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%) !important;
+        border: none !important;
+        box-shadow: 0 6px 20px rgba(79, 70, 229, 0.35) !important;
+    }
+    [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) p,
+    [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) li,
+    [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) span {
+        color: #ffffff !important;
+    }
+    [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-assistant"]) {
+        border-left: 5px solid var(--brand) !important;
+        border-color: #cbd5e1 !important;
+        border-left-color: var(--brand) !important;
+        background: #ffffff !important;
+    }
+    [data-testid="stChatInput"] {
+        background: #ffffff !important;
+        border: 2px solid var(--brand) !important;
+        border-radius: 14px !important;
+        box-shadow: 0 4px 20px rgba(79, 70, 229, 0.18) !important;
+    }
+    [data-testid="stChatInput"]:focus-within {
+        border-color: var(--accent-violet) !important;
+        box-shadow: 0 0 0 4px rgba(124, 58, 237, 0.22), 0 8px 24px rgba(79, 70, 229, 0.2) !important;
+    }
+    [data-testid="stChatInput"] textarea {
+        font-size: 0.98rem !important;
+        color: var(--text) !important;
+    }
+    [data-testid="stChatInput"] button {
+        background: linear-gradient(180deg, var(--brand-glow) 0%, var(--brand) 100%) !important;
+        color: #ffffff !important;
+        border: none !important;
+        border-radius: 10px !important;
+    }
+    .stTextInput input, .stSelectbox select {
+        border-radius: 10px !important;
+        border: 1px solid #94a3b8 !important;
+    }
+    .stSlider [data-baseweb="slider"] div[role="slider"] {
+        background: var(--brand) !important;
+        border-color: var(--brand-dark) !important;
+    }
+    .stCheckbox label p {color: var(--text) !important;}
+    .stButton > button {
+        border-radius: 10px !important;
+        border: 2px solid var(--brand-dark) !important;
+        background: linear-gradient(180deg, var(--brand-glow) 0%, var(--brand) 100%) !important;
+        color: #ffffff !important;
+        font-weight: 600 !important;
+        letter-spacing: 0.01em;
+        box-shadow: 0 4px 14px rgba(79, 70, 229, 0.4) !important;
+        transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease !important;
+    }
+    .stButton > button:hover {
+        border-color: #312e81 !important;
+        background: linear-gradient(180deg, #6366f1 0%, var(--brand-dark) 100%) !important;
+        color: #ffffff !important;
+        filter: brightness(1.05);
+        box-shadow: 0 6px 20px rgba(79, 70, 229, 0.45) !important;
+    }
+    .stButton > button:active {
+        transform: translateY(2px);
+        box-shadow: 0 2px 8px rgba(79, 70, 229, 0.35) !important;
+    }
+    .app-header {
+        border-radius: 16px;
+        padding: 1rem 1.15rem 1.1rem;
+        margin-bottom: 1.5rem;
+        background: linear-gradient(125deg, #1e1b4b 0%, #312e81 42%, #5b21b6 100%);
+        border: 1px solid #312e81;
+        box-shadow: 0 12px 40px rgba(30, 27, 75, 0.45);
+    }
+    .app-title {
+        font-size: 1.4rem;
+        font-weight: 800;
+        color: #ffffff;
+        letter-spacing: -0.03em;
+        line-height: 1.25;
+    }
+    .app-subtitle {
+        color: rgba(226, 232, 240, 0.92) !important;
+        font-size: 0.9rem;
+        margin-top: 0.35rem;
+        line-height: 1.5;
+    }
     .status-pill {
         display: inline-block;
         border-radius: 999px;
-        padding: 0.2rem 0.6rem;
-        font-size: 0.8rem;
-        border: 1px solid #cbd5e1;
-        margin-left: 0.45rem;
-        color: #334155;
-        background: #f1f5f9;
+        padding: 0.2rem 0.65rem;
+        font-size: 0.72rem;
+        font-weight: 600;
+        margin-left: 0.5rem;
+        vertical-align: middle;
+    }
+    .app-header .status-pill.connected {
+        color: #022c22;
+        border: 1px solid #34d399;
+        background: #6ee7b7;
+    }
+    .app-header .status-pill.disconnected {
+        color: #450a0a;
+        border: 1px solid #f87171;
+        background: #fca5a5;
+    }
+    .meta-box {
+        border: 2px solid #a5b4fc;
+        background: linear-gradient(180deg, #eef2ff 0%, #e0e7ff 100%);
+        border-radius: 12px;
+        padding: 0.55rem 0.75rem;
+        margin-top: 0.5rem;
+        margin-bottom: 0.4rem;
+    }
+    .chip {
+        display: inline-block;
+        font-size: 0.74rem;
+        font-weight: 600;
+        color: #312e81;
+        background: #c7d2fe;
+        border: 1px solid #818cf8;
+        border-radius: 999px;
+        padding: 0.15rem 0.55rem;
+        margin: 0.12rem 0.28rem 0.12rem 0;
     }
 </style>
 """,
         unsafe_allow_html=True,
     )
+
+
+def _safe_text(v: Any) -> str:
+    if v is None:
+        return "-"
+    s = str(v).strip()
+    return s if s else "-"
 
 
 def main():
@@ -161,52 +301,34 @@ def main():
         )
     if "feedback_state" not in st.session_state:
         st.session_state["feedback_state"] = {}
+    if "last_route_meta" not in st.session_state:
+        st.session_state["last_route_meta"] = {}
 
     default_persist = str(DEFAULT_PERSIST_DIR)
     backend_default = "http://127.0.0.1:8000"
     backend_status = _backend_reachable(backend_default)
     status_text = "后端已连接" if backend_status else "后端未连接"
+    status_class = "connected" if backend_status else "disconnected"
     st.markdown(
         f"""
 <div class="app-header">
-  <div style="font-size:1.3rem;font-weight:700;">智能客服
-    <span class="status-pill">{status_text}</span>
+  <div class="app-title">智能客服
+    <span class="status-pill {status_class}">{status_text}</span>
   </div>
   <div class="app-subtitle">基于课程知识库的检索增强问答，支持流式输出、来源追踪与降级生成。</div>
 </div>
 """,
         unsafe_allow_html=True,
     )
-
-    with st.sidebar:
-        st.subheader("控制台")
-        backend_url = st.text_input("后端地址（FastAPI）", value=backend_default)
-        if _backend_reachable(backend_url):
-            st.success("后端状态：已连接")
-        else:
-            st.error("后端状态：未连接")
-        st.caption(f"Session ID: `{st.session_state['session_id'][:8]}`")
-        with st.expander("检索参数", expanded=True):
-            k = st.slider("检索段落数 k", min_value=1, max_value=10, value=3)
-            use_llm = st.checkbox("调用 LLM 生成汇总回答", value=True)
-            use_reranker = st.checkbox("启用 Cross-Encoder 重排序", value=True)
-        with st.expander("模型与存储", expanded=False):
-            persist_dir = st.text_input("向量库目录", value=default_persist)
-            collection_name = st.text_input(
-                "Collection 名称", value=DEFAULT_COLLECTION_NAME
-            )
-            embedding_model = st.text_input(
-                "Embedding 模型名", value=DEFAULT_EMBEDDING_MODEL_NAME
-            )
-            llm_model = st.text_input("LLM 模型名（DashScope）", value="qwen-turbo")
-        if st.button("清空会话", use_container_width=True):
-            st.session_state["message"] = [
-                {"role": "assistant", "content": "您好，有什么可以帮助你？"}
-            ]
-            st.session_state["memory"] = ConversationBufferMemory(
-                return_messages=True,
-            )
-            st.rerun()
+    backend_url = backend_default
+    persist_dir = default_persist
+    collection_name = DEFAULT_COLLECTION_NAME
+    embedding_model = DEFAULT_EMBEDDING_MODEL_NAME
+    llm_model = "qwen-turbo"
+    k = 3
+    use_llm = True
+    use_reranker = True
+    show_debug = False
 
     for message in st.session_state["message"]:
         with st.chat_message(message["role"]):
@@ -338,6 +460,7 @@ def main():
                     answer_area.markdown(current_answer)
                 finally:
                     if route_meta:
+                        st.session_state["last_route_meta"] = route_meta
                         route_mode = route_meta.get("route_mode", "-")
                         trace_id = route_meta.get("trace_id", "-")
                         match_score = route_meta.get("match_score")
@@ -346,23 +469,35 @@ def main():
                         match_gate = route_meta.get("match_gate")
                         usable_threshold = route_meta.get("usable_threshold")
                         knowledge_version = route_meta.get("knowledge_version", "-")
-                        st.caption(
-                            "路由: `{route_mode}` | topic={topic} | match_score={match_score} | "
-                            "match_gate={match_gate} | kb_max_score={kb_max_score} | "
-                            "usable_threshold={usable_threshold} | kv={knowledge_version} | trace_id={trace_id}".format(
-                                route_mode=route_mode,
-                                topic=topic,
-                                match_score=match_score,
-                                match_gate=match_gate,
-                                kb_max_score=kb_max_score,
-                                usable_threshold=usable_threshold,
-                                knowledge_version=knowledge_version,
-                                trace_id=trace_id,
+                        if show_debug:
+                            st.markdown(
+                                """
+<div class="meta-box">
+  <span class="chip">route: {route_mode}</span>
+  <span class="chip">topic: {topic}</span>
+  <span class="chip">match: {match_score}</span>
+  <span class="chip">gate: {match_gate}</span>
+  <span class="chip">kb_max: {kb_max_score}</span>
+  <span class="chip">usable: {usable_threshold}</span>
+  <span class="chip">kv: {knowledge_version}</span>
+  <span class="chip">trace: {trace_id}</span>
+</div>
+""".format(
+                                    route_mode=_safe_text(route_mode),
+                                    topic=_safe_text(topic),
+                                    match_score=_safe_text(match_score),
+                                    match_gate=_safe_text(match_gate),
+                                    kb_max_score=_safe_text(kb_max_score),
+                                    usable_threshold=_safe_text(usable_threshold),
+                                    knowledge_version=_safe_text(knowledge_version),
+                                    trace_id=_safe_text(trace_id),
+                                ),
+                                unsafe_allow_html=True,
                             )
-                        )
                         source_refs = route_meta.get("source_refs") or []
                         if source_refs:
-                            with st.expander("来源验证", expanded=False):
+                            with st.container(border=True):
+                                st.markdown("#### 来源验证")
                                 for r in source_refs:
                                     label = r.get("label", "来源")
                                     hint = r.get("hint", "")
@@ -375,9 +510,11 @@ def main():
                         if route_meta.get("degraded"):
                             suggestions = route_meta.get("suggestions") or []
                             if suggestions:
-                                st.info("当前为降级回答，建议这样提问以触发课件检索：")
-                                for s in suggestions[:3]:
-                                    st.markdown(f"- {s}")
+                                with st.container(border=True):
+                                    st.markdown("#### 当前为降级回答")
+                                    st.caption("建议这样提问以触发课件检索：")
+                                    for s in suggestions[:3]:
+                                        st.markdown(f"- {s}")
 
         # 如果关闭了 LLM，只检索不生成：assistant 以检索内容作答（更适合简历演示）
         if not current_answer.strip() and use_llm is False:
