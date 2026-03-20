@@ -68,8 +68,26 @@ def _chat_stream_request(
     return _parse_sse_lines(resp)
 
 
+def _backend_reachable(backend_url: str) -> bool:
+    try:
+        # 根路径即可判断端口/服务是否可达。
+        r = requests.get(backend_url, timeout=2)
+        return r.status_code < 500
+    except Exception:
+        return False
+
+
 def main():
     st.set_page_config(page_title="智能客服", layout="wide")
+    st.markdown(
+        """
+<style>
+    .stChatMessage {padding-top: 0.35rem; padding-bottom: 0.35rem;}
+    .stCodeBlock {border-radius: 10px;}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
     st.title("智能客服")
     st.divider()
 
@@ -93,6 +111,10 @@ def main():
     with st.sidebar:
         st.subheader("检索与模型")
         backend_url = st.text_input("后端地址（FastAPI）", value="http://127.0.0.1:8000")
+        if _backend_reachable(backend_url):
+            st.success("后端状态：已连接")
+        else:
+            st.error("后端状态：未连接")
         persist_dir = st.text_input("向量库目录", value=default_persist)
         collection_name = st.text_input(
             "Collection 名称", value=DEFAULT_COLLECTION_NAME
@@ -104,6 +126,14 @@ def main():
         k = st.slider("检索段落数 k", min_value=1, max_value=10, value=3)
         use_llm = st.checkbox("调用 LLM 生成汇总回答", value=True)
         use_reranker = st.checkbox("启用 Cross-Encoder 重排序", value=True)
+        if st.button("清空会话", use_container_width=True):
+            st.session_state["message"] = [
+                {"role": "assistant", "content": "您好，有什么可以帮助你？"}
+            ]
+            st.session_state["memory"] = ConversationBufferMemory(
+                return_messages=True,
+            )
+            st.rerun()
 
     for message in st.session_state["message"]:
         with st.chat_message(message["role"]):
@@ -128,42 +158,58 @@ def main():
 
                 answer_area = st.empty()
                 current_answer = ""
+                route_meta = None
 
-                for event in _chat_stream_request(
-                    backend_url=backend_url,
-                    session_id=st.session_state["session_id"],
-                    prompt=prompt,
-                    history=history_payload,
-                    k=k,
-                    use_llm=use_llm,
-                    use_reranker=use_reranker,
-                    persist_dir=persist_dir,
-                    collection_name=collection_name,
-                    embedding_model=embedding_model,
-                    llm_model=llm_model,
-                ):
-                    event_type = event.get("type")
-                    event_content = event.get("content") or ""
+                try:
+                    for event in _chat_stream_request(
+                        backend_url=backend_url,
+                        session_id=st.session_state["session_id"],
+                        prompt=prompt,
+                        history=history_payload,
+                        k=k,
+                        use_llm=use_llm,
+                        use_reranker=use_reranker,
+                        persist_dir=persist_dir,
+                        collection_name=collection_name,
+                        embedding_model=embedding_model,
+                        llm_model=llm_model,
+                    ):
+                        event_type = event.get("type")
+                        event_content = event.get("content") or ""
 
-                    if event_type == "context":
-                        context_text = event_content
-                        # 降级为纯模型生成时，不展示“检索段落”栏位。
-                        if event_content.strip() and event_content.strip() != "没有检索到所需内容":
-                            with context_placeholder.container():
-                                with st.expander("检索到的相关段落", expanded=False):
-                                    context_area = st.empty()
-                                    context_area.markdown(event_content)
-                        else:
-                            context_placeholder.empty()
-                    elif event_type == "answer":
-                        current_answer = event_content
-                        answer_area.markdown(current_answer)
-                    elif event_type == "done":
-                        if not current_answer and event_content:
+                        if event_type == "context":
+                            context_text = event_content
+                            # 降级为纯模型生成时，不展示“检索段落”栏位。
+                            if event_content.strip() and event_content.strip() != "没有检索到所需内容":
+                                with context_placeholder.container():
+                                    with st.expander("检索到的相关段落", expanded=False):
+                                        context_area = st.empty()
+                                        context_area.markdown(event_content)
+                            else:
+                                context_placeholder.empty()
+                        elif event_type == "answer":
                             current_answer = event_content
-                    elif event_type == "error":
-                        answer_area.markdown(f"错误：{event_content}")
-                        current_answer = event_content
+                            answer_area.markdown(current_answer)
+                        elif event_type == "meta":
+                            route_meta = event_content
+                        elif event_type == "done":
+                            if not current_answer and event_content:
+                                current_answer = event_content
+                        elif event_type == "error":
+                            answer_area.markdown(f"错误：{event_content}")
+                            current_answer = event_content
+                except requests.RequestException as e:
+                    current_answer = f"后端请求失败：{e}"
+                    answer_area.markdown(current_answer)
+                finally:
+                    if route_meta:
+                        route_mode = route_meta.get("route_mode", "-")
+                        trace_id = route_meta.get("trace_id", "-")
+                        match_score = route_meta.get("match_score")
+                        kb_max_score = route_meta.get("kb_max_score")
+                        st.caption(
+                            f"路由: `{route_mode}` | match_score={match_score} | kb_max_score={kb_max_score} | trace_id={trace_id}"
+                        )
 
         # 如果关闭了 LLM，只检索不生成：assistant 以检索内容作答（更适合简历演示）
         if not current_answer.strip() and use_llm is False:

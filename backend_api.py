@@ -1,5 +1,9 @@
 import json
 import os
+import time
+import uuid
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, Iterator, List
 
 from fastapi import FastAPI
@@ -27,6 +31,8 @@ app = FastAPI(title="RAG Chat Backend（流式 SSE）")
 # - 可用阈值：触发检索后，若 top-k(KB) 最高分仍低于 0.5，则检索内容不喂给 LLM（直接走纯 LLM 生成）
 RETRIEVAL_MATCH_GATE = 0.30
 RETRIEVAL_USABLE_THRESHOLD = 0.50
+LOG_DIR = Path(__file__).resolve().parent / "logs"
+ROUTING_LOG_PATH = LOG_DIR / "routing_events.jsonl"
 
 
 class ChatMessage(BaseModel):
@@ -141,6 +147,16 @@ def _sse_event(payload: Dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _append_routing_log(event: Dict[str, Any]) -> None:
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(ROUTING_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except Exception:
+        # 日志写入失败不应影响主流程
+        pass
+
+
 def _build_source_suffix(docs, llm_model: str) -> str:
     """
     给最终回答附加来源标识：
@@ -168,8 +184,14 @@ def _build_source_suffix(docs, llm_model: str) -> str:
 
 
 def _chat_stream(req: ChatRequest) -> Iterator[str]:
+    trace_id = str(uuid.uuid4())
+    t0 = time.perf_counter()
+
     match_score, _ = compute_course_match_score(req.question)
     should_retrieve = match_score >= RETRIEVAL_MATCH_GATE
+    route_mode = "retrieval" if should_retrieve else "direct_llm"
+    kb_max_score = None
+    degrade_reason = None
 
     docs = []
     scores = None
@@ -190,6 +212,18 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
                 embedding_model=req.embedding_model,
             )
         except Exception as e:
+            _append_routing_log(
+                {
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                    "trace_id": trace_id,
+                    "stage": "load_db_error",
+                    "error": str(e),
+                    "question": req.question,
+                    "session_id": req.session_id,
+                    "match_score": round(match_score, 4),
+                    "route_mode": route_mode,
+                }
+            )
             yield _sse_event(
                 {"type": "error", "content": f"加载向量库失败：{e}"}
             )
@@ -235,14 +269,31 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
                 use_reranker=req.use_reranker,
             )
         except Exception as e:
+            _append_routing_log(
+                {
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                    "trace_id": trace_id,
+                    "stage": "retrieve_error",
+                    "error": str(e),
+                    "question": req.question,
+                    "session_id": req.session_id,
+                    "match_score": round(match_score, 4),
+                    "route_mode": route_mode,
+                }
+            )
             yield _sse_event({"type": "error", "content": f"检索失败：{e}"})
             return
 
         if kb_scores is not None and kb_docs:
             # 仅以课件向量集合的得分判断是否可用。
-            if max(kb_scores) < RETRIEVAL_USABLE_THRESHOLD:
+            kb_max_score = max(kb_scores)
+            if kb_max_score < RETRIEVAL_USABLE_THRESHOLD:
                 docs = []
                 scores = None
+                route_mode = "degraded_low_kb_score"
+                degrade_reason = (
+                    f"kb_max_score={kb_max_score:.4f} < {RETRIEVAL_USABLE_THRESHOLD:.2f}"
+                )
             else:
                 # KB 可用时，将“最近 3 轮对话片段 + KB 候选”一起重排，增强上下文关联。
                 merged_docs = list(kb_docs)
@@ -290,11 +341,40 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
         else:
             docs = []
             scores = None
+            route_mode = "degraded_no_kb_docs"
+            degrade_reason = "kb_docs_empty_or_scores_missing"
+    else:
+        degrade_reason = "match_score_below_gate"
 
     context_text = _format_docs_for_display(docs, scores)
+    yield _sse_event(
+        {
+            "type": "meta",
+            "content": {
+                "trace_id": trace_id,
+                "route_mode": route_mode,
+                "match_score": round(match_score, 4),
+                "kb_max_score": round(kb_max_score, 4) if kb_max_score is not None else None,
+            },
+        }
+    )
     yield _sse_event({"type": "context", "content": context_text})
 
     if not req.use_llm:
+        _append_routing_log(
+            {
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "trace_id": trace_id,
+                "question": req.question,
+                "session_id": req.session_id,
+                "match_score": round(match_score, 4),
+                "kb_max_score": round(kb_max_score, 4) if kb_max_score is not None else None,
+                "route_mode": route_mode,
+                "degrade_reason": degrade_reason,
+                "used_llm": False,
+                "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+            }
+        )
         yield _sse_event({"type": "done", "content": ""})
         return
 
@@ -356,9 +436,39 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
             final_text = source_suffix
 
         # 额外发一帧 answer，保证前端能看到来源标识（即使 done 不刷新主回答）。
+        _append_routing_log(
+            {
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "trace_id": trace_id,
+                "question": req.question,
+                "session_id": req.session_id,
+                "match_score": round(match_score, 4),
+                "kb_max_score": round(kb_max_score, 4) if kb_max_score is not None else None,
+                "route_mode": route_mode,
+                "degrade_reason": degrade_reason,
+                "used_llm": True,
+                "answer_chars": len(final_text),
+                "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+            }
+        )
         yield _sse_event({"type": "answer", "content": final_text})
         yield _sse_event({"type": "done", "content": final_text})
     except Exception as e:
+        _append_routing_log(
+            {
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "trace_id": trace_id,
+                "stage": "llm_error",
+                "error": str(e),
+                "question": req.question,
+                "session_id": req.session_id,
+                "match_score": round(match_score, 4),
+                "kb_max_score": round(kb_max_score, 4) if kb_max_score is not None else None,
+                "route_mode": route_mode,
+                "degrade_reason": degrade_reason,
+                "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+            }
+        )
         yield _sse_event({"type": "error", "content": f"调用 LLM 失败：{e}"})
 
 
