@@ -41,7 +41,7 @@ def _format_docs_for_display(docs, scores: List[float] | None) -> str:
     return "\n\n" + ("-" * 40 + "\n\n").join(lines)
 
 
-def _build_source_suffix(docs, llm_model: str) -> str:
+def _build_source_suffix(docs) -> str:
     kb_positions: list[int] = []
     for i, d in enumerate(docs or []):
         md = getattr(d, "metadata", None) or {}
@@ -57,7 +57,7 @@ def _build_source_suffix(docs, llm_model: str) -> str:
         if contiguous:
             return f"参考课件段落{kb_positions[0]}-{kb_positions[-1]}"
         return "参考课件段落" + "、".join(str(x) for x in kb_positions)
-    return f"该问题回答由 {llm_model} 模型生成"
+    return ""
 
 
 def rag_answer(
@@ -130,8 +130,9 @@ def rag_answer(
             docs=docs_for_llm,
             model=llm_model,
         )
-        source_suffix = _build_source_suffix(docs_for_llm, llm_model)
-        answer = f"{answer}\n\n—— {source_suffix}"
+        source_suffix = _build_source_suffix(docs_for_llm)
+        if source_suffix:
+            answer = f"{answer}\n\n—— {source_suffix}"
     except Exception as e:
         answer = f"调用 LLM 失败：{e}"
         context_text = ""

@@ -26,6 +26,12 @@ from langchain_core.documents import Document
 
 app = FastAPI(title="RAG Chat Backend（流式 SSE）")
 
+
+@app.get("/health")
+def health() -> dict[str, bool]:
+    """供前端探测服务是否就绪（避免仅依赖根路径 404 等行为）。"""
+    return {"ok": True}
+
 #
 # 动态双阈值策略（按 topic 调参）：
 # - match_gate: 决定是否触发检索
@@ -190,11 +196,9 @@ def _thresholds_for_topic(topic: str) -> tuple[float, float]:
     return float(cfg["match_gate"]), float(cfg["usable_threshold"])
 
 
-def _build_source_suffix(docs, llm_model: str) -> str:
+def _build_source_suffix(docs) -> str:
     """
-    给最终回答附加来源标识：
-    - 有课件检索命中：参考课件段落X-Y
-    - 无课件命中（降级）：该问题回答由 <model> 模型生成
+    有课件检索命中时在文末附一句段落引用；无 KB 命中则不追加任何后缀（不再展示模型名）。
     """
     kb_positions: list[int] = []
     for i, d in enumerate(docs or []):
@@ -213,7 +217,7 @@ def _build_source_suffix(docs, llm_model: str) -> str:
             return f"参考课件段落{kb_positions[0]}-{kb_positions[-1]}"
         return "参考课件段落" + "、".join(str(x) for x in kb_positions)
 
-    return f"该问题回答由 {llm_model} 模型生成"
+    return ""
 
 
 def _build_source_refs(docs) -> list[dict[str, str]]:
@@ -540,9 +544,13 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
             except Exception:
                 pass
 
-        source_suffix = _build_source_suffix(docs, req.llm_model)
+        source_suffix = _build_source_suffix(docs)
         if last_text.strip():
-            final_text = f"{last_text}\n\n—— {source_suffix}"
+            final_text = (
+                f"{last_text}\n\n—— {source_suffix}"
+                if source_suffix
+                else last_text
+            )
         else:
             final_text = source_suffix
 
@@ -589,6 +597,12 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
             }
         )
         yield _sse_event({"type": "error", "content": f"调用 LLM 失败：{e}"})
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    """给 Streamlit 探测用，返回 200 即显示「在线」。"""
+    return {"status": "ok"}
 
 
 @app.post("/chat/stream")
