@@ -154,13 +154,16 @@ def _inject_ui_style() -> None:
 <style>
     :root {
         --neo-bg: #0b0d12;
-        --neo-panel: #ffffff;
+        /* 主面板与气泡用灰蓝系，避免纯白刺眼 */
+        --neo-panel: #e8ecf2;
         --neo-ink: #0f172a;
         --neo-muted: #64748b;
         --neo-brand: #6366f1;
         --neo-brand-dim: #4f46e5;
-        --neo-line: #e2e8f0;
-        --neo-assistant-bg: #f1f5f9;
+        --neo-line: #c9d4e3;
+        --neo-assistant-bg: #f0f3f9;
+        --neo-user-bg-a: #e6eaf4;
+        --neo-user-bg-b: #dce3f2;
     }
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
@@ -232,17 +235,17 @@ def _inject_ui_style() -> None:
     .neo-status.bad { color: #fca5a5; background: rgba(248, 113, 113, 0.12); border-color: rgba(248, 113, 113, 0.35); }
     /* 主对话面板：用 .block-container 限定，避免 section.main 在部分版本下匹配不到 */
     .block-container > div [data-testid="stVerticalBlockBorderWrapper"] {
-        background: #ffffff !important;
+        background: var(--neo-panel) !important;
         color: #0f172a !important;
         border-radius: 0 0 16px 16px !important;
-        border: 1px solid rgba(148, 163, 184, 0.35) !important;
+        border: 1px solid rgba(100, 116, 139, 0.22) !important;
         border-top: 1px solid var(--neo-line) !important;
         padding: 0.75rem 0.85rem 1rem !important;
-        box-shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.45) !important;
+        box-shadow: 0 20px 40px -14px rgba(15, 23, 42, 0.35) !important;
     }
     .block-container > div [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stVerticalBlockBorderWrapper"] {
         border-radius: 12px !important;
-        background: #f8fafc !important;
+        background: #dfe6f0 !important;
         color: #0f172a !important;
         border: 1px solid var(--neo-line) !important;
         box-shadow: none !important;
@@ -290,8 +293,8 @@ def _inject_ui_style() -> None:
     }
     /* 支持 :has 时区分用户气泡 */
     [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) [data-testid="stMarkdownContainer"] {
-        background: linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%) !important;
-        border: 1px solid #c7d2fe !important;
+        background: linear-gradient(135deg, var(--neo-user-bg-a) 0%, var(--neo-user-bg-b) 100%) !important;
+        border: 1px solid #b8c5db !important;
     }
     [data-testid="stChatMessage"] label,
     [data-testid="stChatMessage"] [data-testid="stCaption"],
@@ -304,8 +307,8 @@ def _inject_ui_style() -> None:
     .stCodeBlock { border-radius: 10px !important; border: 1px solid var(--neo-line) !important; }
     /* 底部输入：浮在深色底上 */
     [data-testid="stChatInput"] {
-        background: #ffffff !important;
-        border: 1px solid rgba(148, 163, 184, 0.45) !important;
+        background: #f0f3f9 !important;
+        border: 1px solid rgba(100, 116, 139, 0.35) !important;
         border-radius: 999px !important;
         box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35) !important;
     }
@@ -325,7 +328,7 @@ def _inject_ui_style() -> None:
     }
     /* 消息内反馈：紧凑、偏「工具条」而非表单 */
     [data-testid="stChatMessage"] .stButton > button {
-        background: #ffffff !important;
+        background: #f0f3f9 !important;
         color: var(--neo-brand-dim) !important;
         border: 1px solid #c7d2fe !important;
         box-shadow: none !important;
@@ -342,7 +345,7 @@ def _inject_ui_style() -> None:
     [data-testid="stChatMessage"] [data-testid="stExpander"] {
         border: 1px solid var(--neo-line) !important;
         border-radius: 10px !important;
-        background: #fafbfc !important;
+        background: #e8edf5 !important;
         margin-top: 0.35rem !important;
     }
     [data-testid="stChatMessage"] [data-testid="stExpander"] summary,
@@ -363,7 +366,7 @@ def _inject_ui_style() -> None:
     }
     /* 首屏示例问题：secondary 按钮（与反馈区分） */
     [data-testid="stBaseButton-secondary"] {
-        background: #f8fafc !important;
+        background: #e8edf5 !important;
         color: #334155 !important;
         border: 1px solid #e2e8f0 !important;
         font-weight: 500 !important;
@@ -385,8 +388,8 @@ def _inject_ui_style() -> None:
         letter-spacing: 0.02em;
     }
     .meta-box {
-        border: 1px solid #c7d2fe;
-        background: #f8fafc;
+        border: 1px solid #b8c5db;
+        background: #e8edf5;
         border-radius: 12px;
         padding: 0.5rem 0.65rem;
         margin-top: 0.45rem;
@@ -404,7 +407,7 @@ def _inject_ui_style() -> None:
     }
     /* 生成中：spinner 默认在深色页上对比度差，在面板内加浅底+深色字 */
     .block-container [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stSpinner"] {
-        background: #eef2f7 !important;
+        background: #e2e9f3 !important;
         padding: 0.65rem 1rem !important;
         border-radius: 12px !important;
         border: 1px solid #cbd5e1 !important;
@@ -418,7 +421,7 @@ def _inject_ui_style() -> None:
         font-weight: 500 !important;
     }
     .block-container [data-testid="stVerticalBlockBorderWrapper"] .stSpinner {
-        background: #eef2f7 !important;
+        background: #e2e9f3 !important;
         padding: 0.65rem 1rem !important;
         border-radius: 12px !important;
         border: 1px solid #cbd5e1 !important;
@@ -447,7 +450,10 @@ def main():
         layout="centered",
         initial_sidebar_state="collapsed",
     )
-    _inject_ui_style()
+    # 大段 CSS 只注入一次，减轻每次 rerun 的解析与 DOM 写入
+    if not st.session_state.get("_neo_css_injected"):
+        _inject_ui_style()
+        st.session_state["_neo_css_injected"] = True
 
     if "session_id" not in st.session_state:
         st.session_state["session_id"] = str(uuid.uuid4())
