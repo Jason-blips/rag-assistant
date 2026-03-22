@@ -32,6 +32,44 @@ _STARTER_PROMPTS: List[str] = [
 ]
 
 
+def _welcome_messages() -> List[Dict[str, Any]]:
+    return [{"role": "assistant", "content": "您好，有什么可以帮助你？"}]
+
+
+def _memory_from_messages(messages: List[Dict[str, Any]]) -> ConversationBufferMemory:
+    mem = ConversationBufferMemory(return_messages=True)
+    for m in messages:
+        role = m.get("role")
+        content = (m.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "user":
+            mem.chat_memory.add_user_message(content)
+        elif role == "assistant":
+            mem.chat_memory.add_ai_message(content)
+    return mem
+
+
+def _conv_title_from_messages(
+    messages: List[Dict[str, Any]], fallback: str = "新对话"
+) -> str:
+    for m in messages:
+        if m.get("role") == "user" and (m.get("content") or "").strip():
+            t = (m.get("content") or "").strip().replace("\n", " ")
+            return (t[:28] + "…") if len(t) > 28 else t
+    return fallback
+
+
+def _touch_active_conversation() -> None:
+    cid = st.session_state.get("active_conv_id")
+    convs = st.session_state.get("conversations")
+    if not cid or not isinstance(convs, dict) or cid not in convs:
+        return
+    conv = convs[cid]
+    conv["updated_at"] = time.time()
+    conv["title"] = _conv_title_from_messages(conv["messages"])
+
+
 def _parse_sse_lines(resp: requests.Response) -> Iterator[Dict[str, Any]]:
     """
     从 SSE 响应流中解析形如：`data: {...}` 的 JSON 事件。
@@ -169,8 +207,19 @@ def _inject_ui_style() -> None:
     footer {visibility: hidden;}
     header[data-testid="stHeader"] {background: transparent !important;}
     [data-testid="stToolbar"] {display: none;}
-    [data-testid="stSidebar"] {display: none;}
-    [data-testid="collapsedControl"] {display: none;}
+    [data-testid="stSidebar"] > div:first-child {
+        background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%) !important;
+        border-right: 1px solid rgba(148, 163, 184, 0.22) !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stMarkdown"] p,
+    [data-testid="stSidebar"] [data-testid="stMarkdown"] span,
+    [data-testid="stSidebar"] [data-testid="stCaption"] {
+        color: #cbd5e1 !important;
+    }
+    [data-testid="stSidebar"] .stButton > button {
+        justify-content: flex-start !important;
+        text-align: left !important;
+    }
     [data-testid="stDecoration"] {display: none;}
     [data-testid="stDeployButton"] {display: none;}
     .stApp {
@@ -444,30 +493,109 @@ def _safe_text(v: Any) -> str:
     return s if s else "-"
 
 
+def _render_sidebar_chats() -> None:
+    with st.sidebar:
+        st.markdown("##### 历史对话")
+        if st.button("➕ 新建对话", use_container_width=True, type="primary"):
+            new_cid = str(uuid.uuid4())
+            new_sid = str(uuid.uuid4())
+            welcome = _welcome_messages()
+            st.session_state["conversations"][new_cid] = {
+                "title": "新对话",
+                "messages": welcome,
+                "session_id": new_sid,
+                "updated_at": time.time(),
+            }
+            st.session_state["active_conv_id"] = new_cid
+            st.session_state["_conv_switched"] = True
+            st.session_state["_run_stream_for"] = None
+            st.rerun()
+        st.divider()
+        items = sorted(
+            st.session_state["conversations"].items(),
+            key=lambda x: float(x[1].get("updated_at", 0)),
+            reverse=True,
+        )
+        for cid, data in items:
+            title = str(data.get("title") or "未命名")
+            mark = "● " if cid == st.session_state["active_conv_id"] else ""
+            if st.button(
+                f"{mark}{title}",
+                key=f"sidebar_conv_{cid}",
+                use_container_width=True,
+            ):
+                if cid != st.session_state["active_conv_id"]:
+                    st.session_state["active_conv_id"] = cid
+                    st.session_state["_conv_switched"] = True
+                    st.session_state["_run_stream_for"] = None
+                    st.rerun()
+        st.caption("会话保存在本页；关闭或强刷标签页后会清空。")
+
+
 def main():
     st.set_page_config(
         page_title="课程助手",
-        layout="centered",
-        initial_sidebar_state="collapsed",
+        layout="wide",
+        initial_sidebar_state="expanded",
     )
     # 大段 CSS 只注入一次，减轻每次 rerun 的解析与 DOM 写入
     if not st.session_state.get("_neo_css_injected"):
         _inject_ui_style()
         st.session_state["_neo_css_injected"] = True
 
-    if "session_id" not in st.session_state:
-        st.session_state["session_id"] = str(uuid.uuid4())
+    # ---------- 多会话（侧边栏）：兼容旧版仅有 message / session_id ----------
+    if "conversations" not in st.session_state:
+        if "message" in st.session_state and isinstance(
+            st.session_state["message"], list
+        ):
+            _cid = str(uuid.uuid4())
+            _sid = st.session_state.get("session_id") or str(uuid.uuid4())
+            _msgs = st.session_state["message"]
+            st.session_state["conversations"] = {
+                _cid: {
+                    "title": _conv_title_from_messages(_msgs),
+                    "messages": _msgs,
+                    "session_id": _sid,
+                    "updated_at": time.time(),
+                }
+            }
+            st.session_state["active_conv_id"] = _cid
+            st.session_state["session_id"] = _sid
+        else:
+            _cid = str(uuid.uuid4())
+            _sid = str(uuid.uuid4())
+            _msgs = _welcome_messages()
+            st.session_state["conversations"] = {
+                _cid: {
+                    "title": "新对话",
+                    "messages": _msgs,
+                    "session_id": _sid,
+                    "updated_at": time.time(),
+                }
+            }
+            st.session_state["active_conv_id"] = _cid
+            st.session_state["session_id"] = _sid
+            st.session_state["message"] = _msgs
 
-    if "message" not in st.session_state:
-        st.session_state["message"] = [
-            {"role": "assistant", "content": "您好，有什么可以帮助你？"}
-        ]
+    _ac = st.session_state.get("active_conv_id")
+    if _ac not in st.session_state["conversations"]:
+        _ac = next(iter(st.session_state["conversations"]))
+        st.session_state["active_conv_id"] = _ac
+
+    _render_sidebar_chats()
+
+    _conv = st.session_state["conversations"][st.session_state["active_conv_id"]]
+    st.session_state["message"] = _conv["messages"]
+    st.session_state["session_id"] = _conv["session_id"]
+
+    if st.session_state.pop("_conv_switched", False):
+        st.session_state["memory"] = _memory_from_messages(
+            st.session_state["message"]
+        )
 
     if "memory" not in st.session_state:
-        # 用 LangChain 的 ConversationBufferMemory 保存历史对话（用于后续扩展/一致性）。
-        # 注意：向量检索仍然以 st.session_state["message"] 为准。
-        st.session_state["memory"] = ConversationBufferMemory(
-            return_messages=True,
+        st.session_state["memory"] = _memory_from_messages(
+            st.session_state["message"]
         )
     if "feedback_state" not in st.session_state:
         st.session_state["feedback_state"] = {}
@@ -600,11 +728,12 @@ def main():
                     '<p class="neo-prompt-hint">试试这样问</p>',
                     unsafe_allow_html=True,
                 )
+                _aid = st.session_state["active_conv_id"]
                 sc = st.columns(len(_STARTER_PROMPTS))
                 for i, q in enumerate(_STARTER_PROMPTS):
                     if sc[i].button(
                         q,
-                        key=f"starter_{i}",
+                        key=f"starter_{_aid}_{i}",
                         use_container_width=True,
                         type="secondary",
                     ):
@@ -617,6 +746,7 @@ def main():
                         )
                         st.session_state["memory"].chat_memory.add_user_message(q)
                         st.session_state["_run_stream_for"] = q
+                        _touch_active_conversation()
                         st.rerun()
 
             pending = st.session_state.get("_run_stream_for")
@@ -782,6 +912,7 @@ def main():
                 st.session_state["memory"].chat_memory.add_ai_message(
                     current_answer
                 )
+                _touch_active_conversation()
                 st.session_state["_run_stream_for"] = None
                 st.rerun()
 
@@ -793,6 +924,7 @@ def main():
         )
         st.session_state["memory"].chat_memory.add_user_message(prompt)
         st.session_state["_run_stream_for"] = prompt
+        _touch_active_conversation()
         st.rerun()
 
 
