@@ -16,6 +16,7 @@ from vectorstore_utils import (
     DEFAULT_CONVERSATION_COLLECTION_NAME,
     DEFAULT_EMBEDDING_MODEL_NAME,
     DEFAULT_PERSIST_DIR,
+    append_chat_qa_to_kb,
     compute_course_match_score,
     load_knowledge_manifest,
     load_vectorstore,
@@ -153,15 +154,17 @@ def _format_docs_for_display(docs, scores: List[float] | None) -> str:
     for i, doc in enumerate(docs):
         md = getattr(doc, "metadata", None) or {}
         is_conversation = md.get("doc_type") == "conversation"
+        is_user_qa = md.get("doc_type") == "user_qa"
         score_str = ""
         if scores is not None and i < len(scores):
             score_str = f" | score={scores[i]:.4f}"
         hint = _doc_source_hint(doc)
-        header = (
-            f"【对话片段 {i + 1}】{score_str}"
-            if is_conversation
-            else f"【段落 {i + 1}】{score_str}"
-        )
+        if is_user_qa:
+            header = f"【历史问答 {i + 1}】{score_str}"
+        elif is_conversation:
+            header = f"【对话片段 {i + 1}】{score_str}"
+        else:
+            header = f"【段落 {i + 1}】{score_str}"
         if hint:
             header += f"\n来源：{hint}"
         lines.append(f"{header}\n{doc.page_content}")
@@ -269,6 +272,23 @@ def _build_degrade_suggestions(question: str, topic: str) -> list[str]:
             *base,
         ]
     return base
+
+
+def _should_learn_qa_to_kb(answer: str) -> bool:
+    """环境变量 RAG_LEARN_FROM_CHAT=0 可关闭；错误类回复不写入。"""
+    if os.getenv("RAG_LEARN_FROM_CHAT", "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return False
+    a = (answer or "").strip()
+    if not a:
+        return False
+    if a.startswith("错误") or "后端请求失败" in a or "未获取到模型输出" in a:
+        return False
+    return True
 
 
 def _chat_stream(req: ChatRequest) -> Iterator[str]:
@@ -386,14 +406,21 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
             return
 
         if kb_scores is not None and kb_docs:
-            # 仅以课件向量集合的得分判断是否可用。
-            kb_max_score = max(kb_scores)
-            if kb_max_score < usable_threshold:
+            # 仅以课件 chunk（doc_type=kb）的得分判断是否可用；历史问答 user_qa 不参与阈值。
+            kb_only_scores = [
+                float(s)
+                for d, s in zip(kb_docs, kb_scores)
+                if (getattr(d, "metadata", None) or {}).get("doc_type") == "kb"
+            ]
+            kb_max_score = max(kb_only_scores) if kb_only_scores else None
+            if kb_max_score is None or kb_max_score < usable_threshold:
                 docs = []
                 scores = None
                 route_mode = "degraded_low_kb_score"
                 degrade_reason = (
                     f"kb_max_score={kb_max_score:.4f} < {usable_threshold:.2f}"
+                    if kb_max_score is not None
+                    else "no_kb_doc_in_retrieval_hits"
                 )
             else:
                 # KB 可用时，将“最近 3 轮对话片段 + KB 候选”一起重排，增强上下文关联。
@@ -544,6 +571,17 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
             except Exception:
                 pass
 
+        if _should_learn_qa_to_kb(last_text):
+            append_chat_qa_to_kb(
+                question=req.question,
+                answer=last_text,
+                persist_directory=req.persist_dir,
+                collection_name=req.collection_name,
+                embedding_model=req.embedding_model,
+                trace_id=trace_id,
+                session_id=req.session_id,
+            )
+
         source_suffix = _build_source_suffix(docs)
         if last_text.strip():
             final_text = (
@@ -597,12 +635,6 @@ def _chat_stream(req: ChatRequest) -> Iterator[str]:
             }
         )
         yield _sse_event({"type": "error", "content": f"调用 LLM 失败：{e}"})
-
-
-@app.get("/health")
-def health() -> dict[str, str]:
-    """给 Streamlit 探测用，返回 200 即显示「在线」。"""
-    return {"status": "ok"}
 
 
 @app.post("/chat/stream")

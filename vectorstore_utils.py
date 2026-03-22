@@ -881,3 +881,54 @@ def load_vectorstore(
         collection_name=collection_name,
     )
 
+
+def append_chat_qa_to_kb(
+    *,
+    question: str,
+    answer: str,
+    persist_directory: Path | str,
+    collection_name: str,
+    embedding_model: str,
+    trace_id: str,
+    session_id: str,
+    max_answer_chars: int = 14000,
+) -> bool:
+    """
+    将一轮「问 + 答」写入与课件相同的 Chroma collection，并追加到 BM25 语料，
+    使后续混合检索能命中历史问答（metadata: doc_type=user_qa）。
+    向量库目录不存在时静默跳过。
+    """
+    persist_directory = Path(persist_directory)
+    if not persist_directory.exists():
+        return False
+    q = (question or "").strip()
+    a = (answer or "").strip()
+    if not q or not a:
+        return False
+    if len(a) > max_answer_chars:
+        a = a[:max_answer_chars] + "\n…（已截断）"
+    topic = infer_topic(q)
+    body = f"问：{q}\n\n答：{a}"
+    doc = Document(
+        page_content=body,
+        metadata={
+            "doc_type": "user_qa",
+            "topic": topic,
+            "source": "chat_qa",
+            "trace_id": trace_id,
+            "session_id": session_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    try:
+        db = load_vectorstore(
+            persist_directory=persist_directory,
+            model_name=embedding_model,
+            collection_name=collection_name,
+        )
+        db.add_documents([doc], ids=[f"user_qa:{trace_id}"])
+        save_bm25_corpus([doc], persist_directory=persist_directory, append=True)
+        return True
+    except Exception:
+        return False
+

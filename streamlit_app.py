@@ -9,6 +9,7 @@
 """
 import json
 import os
+import re
 import time
 import uuid
 from typing import Any, Dict, Iterator, List
@@ -70,6 +71,25 @@ def _touch_active_conversation() -> None:
     conv["title"] = _conv_title_from_messages(conv["messages"])
 
 
+def _api_chat_history(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """只传 role/content 给后端，避免多余字段；空内容跳过。"""
+    out: List[Dict[str, str]] = []
+    for m in messages:
+        role = m.get("role")
+        content = (m.get("content") or "").strip()
+        if not content or role not in ("user", "assistant"):
+            continue
+        out.append({"role": str(role), "content": content})
+    return out
+
+
+@st.cache_resource
+def _http_session() -> requests.Session:
+    """复用连接池：健康检查 / 流式问答 / 反馈 共用，减轻反复 TCP 握手。"""
+    s = requests.Session()
+    return s
+
+
 def _parse_sse_lines(resp: requests.Response) -> Iterator[Dict[str, Any]]:
     """
     从 SSE 响应流中解析形如：`data: {...}` 的 JSON 事件。
@@ -110,7 +130,7 @@ def _chat_stream_request(
         "llm_model": llm_model,
     }
 
-    resp = requests.post(
+    resp = _http_session().post(
         f"{backend_url}/chat/stream",
         json=req_payload,
         stream=True,
@@ -124,14 +144,15 @@ def _backend_reachable(backend_url: str, *, timeout: float = 0.25) -> bool:
     base = (backend_url or "").rstrip("/")
     if not base:
         return False
+    sess = _http_session()
     try:
-        r = requests.get(f"{base}/health", timeout=timeout)
+        r = sess.get(f"{base}/health", timeout=timeout)
         if r.status_code == 200:
             return True
     except Exception:
         pass
     try:
-        r = requests.get(base, timeout=timeout)
+        r = sess.get(base, timeout=timeout)
         return r.status_code < 500
     except Exception:
         return False
@@ -188,7 +209,7 @@ def _submit_feedback(
         "kb_max_score": (meta or {}).get("kb_max_score"),
     }
     try:
-        r = requests.post(f"{backend_url}/feedback", json=payload, timeout=10)
+        r = _http_session().post(f"{backend_url}/feedback", json=payload, timeout=10)
         r.raise_for_status()
         data = r.json()
         if not data.get("ok", False):
@@ -251,12 +272,16 @@ def _inject_ui_style() -> None:
             linear-gradient(180deg, #334155 0%, #475569 42%, #64748b 100%) !important;
     }
     /* 勿在 .stApp 上写死深色字：聊天区若未套上浅色气泡会与深色底叠在一起看不见 */
+    /* chat_input 固定在底部（stBottom），主区需多留底边距，否则最后几条消息像被「压住」 */
     .block-container {
         padding-top: 1.25rem;
-        padding-bottom: 5rem;
+        padding-bottom: 7.5rem;
         max-width: 44rem !important;
-        color: #0f172a;
+        color: #e2e8f0;
         background: transparent !important;
+    }
+    section.main {
+        scroll-padding-bottom: 6rem;
     }
     /* 主内容区不要大白底，与页脚输入区视觉连贯 */
     [data-testid="stAppViewContainer"],
@@ -264,11 +289,13 @@ def _inject_ui_style() -> None:
     section.main {
         background: transparent !important;
     }
-    /* 底部 Dock：与外圈渐变同色阶衔接 */
+    /* 底部 Dock：与背景融在一起，减轻「整块盖在内容上」的悬浮感 */
     [data-testid="stBottom"] {
-        background: linear-gradient(180deg, rgba(100, 116, 139, 0) 0%, #64748b 38%, #787f8f 100%) !important;
+        background: linear-gradient(180deg, rgba(51, 65, 85, 0) 0%, rgba(71, 85, 105, 0.92) 45%, #64748b 100%) !important;
         border-top: none !important;
         padding-top: 0.5rem !important;
+        padding-bottom: env(safe-area-inset-bottom, 0) !important;
+        box-shadow: none !important;
     }
     .neo-topbar {
         display: flex;
@@ -307,38 +334,56 @@ def _inject_ui_style() -> None:
     .neo-status.ok { color: #6ee7b7; background: rgba(16, 185, 129, 0.12); border-color: rgba(52, 211, 153, 0.35); }
     .neo-status.bad { color: #fca5a5; background: rgba(248, 113, 113, 0.12); border-color: rgba(248, 113, 113, 0.35); }
     .neo-status.pending { color: #fde68a; background: rgba(251, 191, 36, 0.12); border-color: rgba(251, 191, 36, 0.35); }
-    /* 主对话面板：用 .block-container 限定，避免 section.main 在部分版本下匹配不到 */
+    /* 主对话区：与顶栏衔接，半透明底即可，正文为「文档流」而非白气泡卡片 */
     .block-container > div [data-testid="stVerticalBlockBorderWrapper"] {
-        background: var(--neo-panel) !important;
-        color: #0f172a !important;
+        background: rgba(15, 23, 42, 0.28) !important;
+        color: #e2e8f0 !important;
         border-radius: 0 0 16px 16px !important;
-        border: 1px solid rgba(100, 116, 139, 0.22) !important;
-        border-top: 1px solid var(--neo-line) !important;
-        padding: 0.75rem 0.85rem 1rem !important;
-        box-shadow: 0 20px 40px -14px rgba(15, 23, 42, 0.35) !important;
+        border: 1px solid rgba(148, 163, 184, 0.18) !important;
+        border-top: 1px solid rgba(148, 163, 184, 0.12) !important;
+        padding: 0.75rem 0.95rem 1.1rem !important;
+        box-shadow: none !important;
     }
     .block-container > div [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stVerticalBlockBorderWrapper"] {
-        border-radius: 12px !important;
-        background: #dfe6f0 !important;
-        color: #0f172a !important;
-        border: 1px solid var(--neo-line) !important;
+        border-radius: 0 !important;
+        background: transparent !important;
+        color: #e2e8f0 !important;
+        border: none !important;
         box-shadow: none !important;
-        padding: 0.45rem 0.6rem !important;
+        padding: 0.2rem 0 !important;
     }
     [data-testid="stChatMessage"] {
         border: none !important;
         background: transparent !important;
         box-shadow: none !important;
         padding: 0.35rem 0 !important;
-        margin-bottom: 0.35rem !important;
+        margin-bottom: 0 !important;
+        position: relative !important;
+    }
+    /* 一问一答收紧为一组；新一轮用户提问前加分隔，读起来有「接在上文后面」的层次 */
+    [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"])
+        + [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-assistant"]) {
+        margin-top: 0.1rem !important;
+        padding-top: 0 !important;
+    }
+    [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-assistant"])
+        + [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
+        margin-top: 1rem !important;
+        padding-top: 0.55rem !important;
+        border-top: 1px solid rgba(129, 140, 248, 0.22) !important;
+    }
+    /* 左侧时间线：只作用于含聊天气泡的列，避免误伤其它布局 */
+    .block-container [data-testid="stVerticalBlock"]:has([data-testid="stChatMessage"]) {
+        border-left: 2px solid rgba(99, 102, 241, 0.28) !important;
+        padding-left: 0.75rem !important;
+        margin-left: 0.15rem !important;
     }
     [data-testid="stChatMessage"] > div {
-        gap: 0.65rem !important;
+        gap: 0.75rem !important;
         align-items: flex-start !important;
     }
-    /* 避免正文列 flex 撑满整行，否则气泡会被拉成一条 */
     [data-testid="stChatMessage"] > div > div:has([data-testid="stMarkdownContainer"]) {
-        flex: 0 1 auto !important;
+        flex: 1 1 auto !important;
         max-width: 100% !important;
         min-width: 0 !important;
     }
@@ -357,49 +402,81 @@ def _inject_ui_style() -> None:
     [data-testid="stChatMessage"] [data-baseweb="avatar"] {
         background: linear-gradient(145deg, #6366f1, #7c3aed) !important;
     }
-    /* 每条消息正文：浅色气泡；inline-block + max-width 让短句随文字变窄，长文仍自动换行 */
+    /* 消息正文：无气泡，与生成区一致为浅色字 + 透明底、通栏排版 */
     [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] {
-        display: inline-block !important;
-        vertical-align: top !important;
-        width: auto !important;
-        max-width: min(100%, 42rem) !important;
+        display: block !important;
+        width: 100% !important;
+        max-width: 100% !important;
         box-sizing: border-box !important;
-        background: var(--neo-assistant-bg) !important;
-        border: 1px solid var(--neo-line) !important;
-        border-radius: 14px !important;
-        padding: 0.55rem 0.85rem !important;
-        color: #0f172a !important;
+        background: transparent !important;
+        border: none !important;
+        border-radius: 0 !important;
+        padding: 0.1rem 0 0.2rem 0 !important;
+        color: #f1f5f9 !important;
+        font-size: 0.95rem !important;
+        line-height: 1.65 !important;
     }
     [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] p,
     [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] li,
-    [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] span,
-    [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] code {
-        color: #0f172a !important;
+    [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] span {
+        color: #e2e8f0 !important;
     }
-    /* 支持 :has 时区分用户气泡 */
-    [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) [data-testid="stMarkdownContainer"] {
-        background: linear-gradient(135deg, var(--neo-user-bg-a) 0%, var(--neo-user-bg-b) 100%) !important;
-        border: 1px solid #b8c5db !important;
+    [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] a {
+        color: #a5b4fc !important;
+    }
+    [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] code {
+        color: #fde68a !important;
+        background: rgba(15, 23, 42, 0.5) !important;
+        border: 1px solid rgba(148, 163, 184, 0.25) !important;
+        padding: 0.08rem 0.35rem !important;
+        border-radius: 4px !important;
+        font-size: 0.88em !important;
+    }
+    /* 用户提问：略冷灰，与助手区分，仍非气泡 */
+    [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) [data-testid="stMarkdownContainer"] p,
+    [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) [data-testid="stMarkdownContainer"] li {
+        color: #cbd5e1 !important;
     }
     [data-testid="stChatMessage"] label,
     [data-testid="stChatMessage"] [data-testid="stCaption"],
     [data-testid="stChatMessage"] .stMarkdown label {
-        color: #334155 !important;
+        color: #94a3b8 !important;
     }
     [data-testid="stChatMessage"] [data-baseweb="select"] > div {
-        color: #0f172a !important;
+        color: #e2e8f0 !important;
     }
-    .stCodeBlock { border-radius: 10px !important; border: 1px solid var(--neo-line) !important; }
-    /* 底部输入：浮在深色底上 */
+    [data-testid="stChatMessage"] pre,
+    [data-testid="stChatMessage"] .stCodeBlock {
+        border-radius: 8px !important;
+        border: 1px solid rgba(148, 163, 184, 0.22) !important;
+        background: rgba(15, 23, 42, 0.55) !important;
+        color: #e2e8f0 !important;
+    }
+    .stCodeBlock { border-radius: 10px !important; border: 1px solid rgba(148, 163, 184, 0.2) !important; }
+    /* 流式输出、相关段落展开：与正文同色（不在 chat_message 内时） */
+    .block-container [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stMarkdownContainer"] p,
+    .block-container [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stMarkdownContainer"] li {
+        color: #e2e8f0 !important;
+    }
+    .block-container [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stExpander"] {
+        border: 1px solid rgba(148, 163, 184, 0.22) !important;
+        border-radius: 10px !important;
+        background: rgba(15, 23, 42, 0.4) !important;
+    }
+    .block-container [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stExpander"] summary,
+    .block-container [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stExpander"] summary span {
+        color: #cbd5e1 !important;
+    }
+    /* 底部输入：略抬升即可，过重阴影会像「卡片压在内容上」 */
     [data-testid="stChatInput"] {
         background: #f0f3f9 !important;
         border: 1px solid rgba(100, 116, 139, 0.35) !important;
         border-radius: 999px !important;
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35) !important;
+        box-shadow: 0 2px 14px rgba(15, 23, 42, 0.22) !important;
     }
     [data-testid="stChatInput"]:focus-within {
         border-color: var(--neo-brand) !important;
-        box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25), 0 12px 40px rgba(0, 0, 0, 0.35) !important;
+        box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.22), 0 4px 18px rgba(15, 23, 42, 0.2) !important;
     }
     [data-testid="stChatInput"] textarea {
         font-size: 0.95rem !important;
@@ -411,11 +488,11 @@ def _inject_ui_style() -> None:
         border: none !important;
         border-radius: 999px !important;
     }
-    /* 消息内反馈：紧凑、偏「工具条」而非表单 */
+    /* 消息内反馈：深色底上的轻量按钮 */
     [data-testid="stChatMessage"] .stButton > button {
-        background: #f0f3f9 !important;
-        color: var(--neo-brand-dim) !important;
-        border: 1px solid #c7d2fe !important;
+        background: rgba(15, 23, 42, 0.45) !important;
+        color: #c7d2fe !important;
+        border: 1px solid rgba(129, 140, 248, 0.45) !important;
         box-shadow: none !important;
         font-weight: 500 !important;
         min-height: 2.25rem !important;
@@ -424,18 +501,18 @@ def _inject_ui_style() -> None:
         border-radius: 8px !important;
     }
     [data-testid="stChatMessage"] .stButton > button:hover {
-        background: #eef2ff !important;
-        border-color: var(--neo-brand) !important;
+        background: rgba(79, 70, 229, 0.35) !important;
+        border-color: #a5b4fc !important;
     }
     [data-testid="stChatMessage"] [data-testid="stExpander"] {
-        border: 1px solid var(--neo-line) !important;
+        border: 1px solid rgba(148, 163, 184, 0.22) !important;
         border-radius: 10px !important;
-        background: #e8edf5 !important;
+        background: rgba(15, 23, 42, 0.35) !important;
         margin-top: 0.35rem !important;
     }
     [data-testid="stChatMessage"] [data-testid="stExpander"] summary,
     [data-testid="stChatMessage"] [data-testid="stExpander"] summary span {
-        color: #475569 !important;
+        color: #cbd5e1 !important;
         font-size: 0.8125rem !important;
         font-weight: 500 !important;
     }
@@ -449,72 +526,73 @@ def _inject_ui_style() -> None:
     .stSelectbox label, .stSelectbox [data-baseweb="select"] {
         font-size: 0.85rem !important;
     }
-    /* 首屏示例问题：secondary 按钮（与反馈区分） */
-    [data-testid="stBaseButton-secondary"] {
-        background: #e8edf5 !important;
-        color: #334155 !important;
-        border: 1px solid #e2e8f0 !important;
+    /* 主区示例问题：与深色正文区一致（侧栏按钮不受影响：侧栏无 block-container） */
+    .block-container [data-testid="stBaseButton-secondary"] {
+        background: rgba(15, 23, 42, 0.4) !important;
+        color: #e2e8f0 !important;
+        border: 1px solid rgba(148, 163, 184, 0.28) !important;
         font-weight: 500 !important;
         font-size: 0.8125rem !important;
         border-radius: 10px !important;
         box-shadow: none !important;
         min-height: 2.35rem !important;
     }
-    [data-testid="stBaseButton-secondary"]:hover {
-        background: #eef2ff !important;
-        border-color: #c7d2fe !important;
-        color: #312e81 !important;
+    .block-container [data-testid="stBaseButton-secondary"]:hover {
+        background: rgba(79, 70, 229, 0.28) !important;
+        border-color: #818cf8 !important;
+        color: #f8fafc !important;
     }
     .neo-prompt-hint {
         font-size: 0.75rem;
         font-weight: 600;
-        color: #64748b;
+        color: #94a3b8;
         margin: 0.5rem 0 0.4rem 0;
         letter-spacing: 0.02em;
     }
     .meta-box {
-        border: 1px solid #b8c5db;
-        background: #e8edf5;
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        background: rgba(15, 23, 42, 0.45);
         border-radius: 12px;
         padding: 0.5rem 0.65rem;
         margin-top: 0.45rem;
+        color: #cbd5e1;
     }
     .chip {
         display: inline-block;
         font-size: 0.72rem;
         font-weight: 600;
-        color: #3730a3;
-        background: #e0e7ff;
-        border: 1px solid #a5b4fc;
+        color: #c7d2fe;
+        background: rgba(55, 48, 163, 0.45);
+        border: 1px solid rgba(129, 140, 248, 0.45);
         border-radius: 999px;
         padding: 0.12rem 0.45rem;
         margin: 0.08rem 0.2rem 0.08rem 0;
     }
-    /* 生成中：spinner 默认在深色页上对比度差，在面板内加浅底+深色字 */
+    /* 生成中：与正文同一视觉——无浅底盒子，仅浅色字 */
     .block-container [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stSpinner"] {
-        background: #e2e9f3 !important;
-        padding: 0.65rem 1rem !important;
-        border-radius: 12px !important;
-        border: 1px solid #cbd5e1 !important;
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7) !important;
-        margin: 0.35rem 0 0.5rem 0 !important;
+        background: transparent !important;
+        padding: 0.35rem 0 !important;
+        border-radius: 0 !important;
+        border: none !important;
+        box-shadow: none !important;
+        margin: 0.25rem 0 0.6rem 0 !important;
     }
     .block-container [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stSpinner"] p,
     .block-container [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stSpinner"] span,
     .block-container [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stSpinner"] label {
-        color: #0f172a !important;
+        color: #cbd5e1 !important;
         font-weight: 500 !important;
     }
     .block-container [data-testid="stVerticalBlockBorderWrapper"] .stSpinner {
-        background: #e2e9f3 !important;
-        padding: 0.65rem 1rem !important;
-        border-radius: 12px !important;
-        border: 1px solid #cbd5e1 !important;
-        margin: 0.35rem 0 0.5rem 0 !important;
+        background: transparent !important;
+        padding: 0.35rem 0 !important;
+        border-radius: 0 !important;
+        border: none !important;
+        margin: 0.25rem 0 0.6rem 0 !important;
     }
     .block-container [data-testid="stVerticalBlockBorderWrapper"] .stSpinner p,
     .block-container [data-testid="stVerticalBlockBorderWrapper"] .stSpinner span {
-        color: #0f172a !important;
+        color: #cbd5e1 !important;
     }
 </style>
 """,
@@ -527,6 +605,37 @@ def _safe_text(v: Any) -> str:
         return "-"
     s = str(v).strip()
     return s if s else "-"
+
+
+def _conversation_to_markdown(title: str, messages: List[Dict[str, Any]]) -> str:
+    lines = [
+        f"# {title}",
+        "",
+        f"_导出时间：{time.strftime('%Y-%m-%d %H:%M:%S')}_",
+        "",
+    ]
+    for m in messages:
+        role = m.get("role")
+        content = (m.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "user":
+            label = "用户"
+        elif role == "assistant":
+            label = "助手"
+        else:
+            label = str(role or "消息")
+        lines.append(f"## {label}")
+        lines.append("")
+        lines.append(content)
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _export_md_filename(title: str) -> str:
+    base = re.sub(r'[\\/:*?"<>|\r\n]+', "_", (title or "").strip())
+    base = (base[:48] if base else "对话").strip("._") or "对话"
+    return f"课程助手_{base}_{time.strftime('%Y%m%d_%H%M%S')}.md"
 
 
 def _render_sidebar_chats() -> None:
@@ -565,6 +674,23 @@ def _render_sidebar_chats() -> None:
                     st.session_state["_conv_switched"] = True
                     st.session_state["_run_stream_for"] = None
                     st.rerun()
+        _aid = st.session_state.get("active_conv_id")
+        _convs = st.session_state.get("conversations")
+        if _aid and isinstance(_convs, dict) and _aid in _convs:
+            _data = _convs[_aid]
+            _title = str(_data.get("title") or "对话")
+            _msgs = _data.get("messages")
+            if isinstance(_msgs, list) and _msgs:
+                _md = _conversation_to_markdown(_title, _msgs)
+                st.download_button(
+                    "导出当前对话 (.md)",
+                    data=_md.encode("utf-8"),
+                    file_name=_export_md_filename(_title),
+                    mime="text/markdown",
+                    use_container_width=True,
+                    type="secondary",
+                    key="sidebar_export_md",
+                )
         st.caption("会话保存在本页；关闭或强刷标签页后会清空。")
 
 
@@ -648,7 +774,7 @@ def main():
 <div class="neo-topbar">
   <div>
     <div class="neo-brand">课程助手</div>
-    <div class="neo-tagline">课程知识库 · 流式回答 · 来源可追溯</div>
+    <div class="neo-tagline">课程知识库 · 流式回答 · 来源可追溯 · 问答可写入检索库</div>
   </div>
   <span class="neo-status {status_class}">{status_text}</span>
 </div>
@@ -665,7 +791,7 @@ def main():
     use_reranker = True
     show_debug = False
 
-    with st.container(border=True):
+    with st.container():
             # 仅最新一条助手消息展示反馈控件，避免长会话时控件数量爆炸拖慢渲染
             last_feedback_msg_id: str | None = None
             for m in reversed(st.session_state["message"]):
@@ -784,7 +910,7 @@ def main():
             pending = st.session_state.get("_run_stream_for")
             if pending:
                 stream_prompt = pending
-                history_payload: List[Dict[str, str]] = list(
+                history_payload = _api_chat_history(
                     st.session_state["message"]
                 )
                 # 生成过程放在聊天气泡外：仅 st.spinner + 正文，完成后写入历史再以气泡展示

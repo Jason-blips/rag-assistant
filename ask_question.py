@@ -50,6 +50,8 @@ def _format_context(docs) -> str:
         if md.get("doc_type") == "conversation":
             role = md.get("role") or "对话"
             parts.append(f"[对话片段 {i + 1} | {role}]\n{doc.page_content}")
+        elif md.get("doc_type") == "user_qa":
+            parts.append(f"[历史问答 {i + 1}]\n{doc.page_content}")
         else:
             parts.append(f"[段落 {i + 1}]\n{doc.page_content}")
     return "\n\n---\n\n".join(parts)
@@ -187,16 +189,28 @@ def _summarize_with_llm(question: str, docs, model: str) -> str:
     return text
 
 
-def _format_history_for_prompt(history: list[dict[str, Any]]) -> str:
+def _format_history_for_prompt(
+    history: list[dict[str, Any]],
+    *,
+    current_question: str | None = None,
+    max_turns: int = 16,
+) -> str:
     """
     将前端传入的历史消息格式化为提示词片段（用于保证对话连贯性）。
+    若最后一条用户话与本轮 question 相同，则不在「前面聊过」里重复写一遍，避免模型觉得上下文断裂。
     """
     if not history:
         return ""
 
+    msgs = list(history[-max_turns:])
+    cq = (current_question or "").strip()
+    if cq and msgs and (msgs[-1].get("role") or "").lower() == "user":
+        last_u = (msgs[-1].get("content") or "").strip()
+        if last_u == cq:
+            msgs = msgs[:-1]
+
     parts: list[str] = []
-    # 只取最近若干轮，避免 prompt 过长
-    for msg in history[-10:]:
+    for msg in msgs:
         role = (msg.get("role") or "").lower()
         content = (msg.get("content") or "").strip()
         if not content:
@@ -236,7 +250,9 @@ def _summarize_with_llm_stream(
 
     context_text = _format_context(docs)
     has_docs = bool(docs)
-    history_text = _format_history_for_prompt(history or [])
+    history_text = _format_history_for_prompt(
+        history or [], current_question=question
+    )
 
     system_prompt = _LLM_SYSTEM_PROMPT
     if not has_docs:
