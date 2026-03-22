@@ -7,9 +7,9 @@
 
 不要：python streamlit_app.py
 """
-import html
 import json
 import os
+import time
 import uuid
 from typing import Any, Dict, Iterator, List
 
@@ -82,21 +82,38 @@ def _chat_stream_request(
     return _parse_sse_lines(resp)
 
 
-def _backend_reachable(backend_url: str) -> bool:
+def _backend_reachable(backend_url: str, *, timeout: float = 0.5) -> bool:
     base = (backend_url or "").rstrip("/")
     if not base:
         return False
     try:
-        r = requests.get(f"{base}/health", timeout=2)
+        r = requests.get(f"{base}/health", timeout=timeout)
         if r.status_code == 200:
             return True
     except Exception:
         pass
     try:
-        r = requests.get(base, timeout=2)
+        r = requests.get(base, timeout=timeout)
         return r.status_code < 500
     except Exception:
         return False
+
+
+def _backend_status_cached(backend_url: str, ttl_sec: float = 20.0) -> bool:
+    """
+    健康检查带短时缓存，避免 Streamlit 每次 rerun 都打 HTTP（离线时原逻辑最多卡约 4s）。
+    """
+    now = time.monotonic()
+    cache = st.session_state.get("_backend_ping")
+    if (
+        isinstance(cache, dict)
+        and cache.get("url") == backend_url
+        and (now - float(cache.get("t", 0))) < ttl_sec
+    ):
+        return bool(cache.get("ok"))
+    ok = _backend_reachable(backend_url)
+    st.session_state["_backend_ping"] = {"url": backend_url, "t": now, "ok": ok}
+    return ok
 
 
 def _submit_feedback(
@@ -154,8 +171,8 @@ def _inject_ui_style() -> None:
     [data-testid="stDecoration"] {display: none;}
     [data-testid="stDeployButton"] {display: none;}
     .stApp {
-        background: radial-gradient(ellipse 80% 50% at 50% -20%, rgba(99, 102, 241, 0.22), transparent),
-            linear-gradient(180deg, #0b0d12 0%, #111827 40%, #0f172a 100%) !important;
+        background: radial-gradient(ellipse 90% 55% at 50% -18%, rgba(99, 102, 241, 0.16), transparent),
+            linear-gradient(180deg, #334155 0%, #475569 42%, #64748b 100%) !important;
     }
     /* 勿在 .stApp 上写死深色字：聊天区若未套上浅色气泡会与深色底叠在一起看不见 */
     .block-container {
@@ -171,9 +188,9 @@ def _inject_ui_style() -> None:
     section.main {
         background: transparent !important;
     }
-    /* 底部 Dock：与深色页渐变衔接，去掉「半截白条」 */
+    /* 底部 Dock：与外圈渐变同色阶衔接 */
     [data-testid="stBottom"] {
-        background: linear-gradient(180deg, rgba(15, 23, 42, 0) 0%, #0f172a 45%, #0b0d12 100%) !important;
+        background: linear-gradient(180deg, rgba(100, 116, 139, 0) 0%, #64748b 38%, #787f8f 100%) !important;
         border-top: none !important;
         padding-top: 0.5rem !important;
     }
@@ -385,6 +402,32 @@ def _inject_ui_style() -> None:
         padding: 0.12rem 0.45rem;
         margin: 0.08rem 0.2rem 0.08rem 0;
     }
+    /* 生成中：spinner 默认在深色页上对比度差，在面板内加浅底+深色字 */
+    .block-container [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stSpinner"] {
+        background: #eef2f7 !important;
+        padding: 0.65rem 1rem !important;
+        border-radius: 12px !important;
+        border: 1px solid #cbd5e1 !important;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7) !important;
+        margin: 0.35rem 0 0.5rem 0 !important;
+    }
+    .block-container [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stSpinner"] p,
+    .block-container [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stSpinner"] span,
+    .block-container [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stSpinner"] label {
+        color: #0f172a !important;
+        font-weight: 500 !important;
+    }
+    .block-container [data-testid="stVerticalBlockBorderWrapper"] .stSpinner {
+        background: #eef2f7 !important;
+        padding: 0.65rem 1rem !important;
+        border-radius: 12px !important;
+        border: 1px solid #cbd5e1 !important;
+        margin: 0.35rem 0 0.5rem 0 !important;
+    }
+    .block-container [data-testid="stVerticalBlockBorderWrapper"] .stSpinner p,
+    .block-container [data-testid="stVerticalBlockBorderWrapper"] .stSpinner span {
+        color: #0f172a !important;
+    }
 </style>
 """,
         unsafe_allow_html=True,
@@ -431,7 +474,7 @@ def main():
     backend_default = os.getenv(
         "RAG_BACKEND_URL", "http://127.0.0.1:8000"
     ).rstrip("/")
-    backend_status = _backend_reachable(backend_default)
+    backend_status = _backend_status_cached(backend_default)
     status_text = "在线" if backend_status else "离线"
     status_class = "ok" if backend_status else "bad"
     st.markdown(
@@ -457,12 +500,19 @@ def main():
     show_debug = False
 
     with st.container(border=True):
+            # 仅最新一条助手消息展示反馈控件，避免长会话时控件数量爆炸拖慢渲染
+            last_feedback_msg_id: str | None = None
+            for m in reversed(st.session_state["message"]):
+                if m.get("role") == "assistant" and m.get("id"):
+                    last_feedback_msg_id = str(m["id"])
+                    break
+
             for message in st.session_state["message"]:
                 with st.chat_message(message["role"]):
                     st.markdown(message["content"])
                     if message["role"] == "assistant" and message.get("content"):
                         msg_id = message.get("id")
-                        if msg_id:
+                        if msg_id and str(msg_id) == last_feedback_msg_id:
                             fb = st.session_state["feedback_state"].get(msg_id, {})
                             submitted = fb.get("submitted", False)
                             if not submitted:
@@ -527,6 +577,12 @@ def main():
                                         else:
                                             st.warning(f"反馈提交失败: {err}")
                             else:
+                                st.caption("反馈已提交，感谢你的反馈。")
+                        elif msg_id:
+                            _ofb = st.session_state["feedback_state"].get(
+                                msg_id, {}
+                            )
+                            if _ofb.get("submitted"):
                                 st.caption("反馈已提交，感谢你的反馈。")
 
             if (
@@ -734,20 +790,7 @@ def main():
         st.rerun()
 
 
+# streamlit run 会执行本文件且 __name__ 为 __main__；部分版本下 get_script_run_ctx()
+# 在首次执行时仍为 None，若据此 sys.exit 会导致页面空白「无法加载」。因此始终调用 main()。
 if __name__ == "__main__":
-    import sys
-
-    try:
-        from streamlit.runtime.scriptrunner import get_script_run_ctx
-    except Exception:
-        get_script_run_ctx = lambda: None  # type: ignore[misc, assignment]
-
-    if get_script_run_ctx() is None:
-        print(
-            "\n请用 Streamlit 启动本应用（不要直接 python 运行）：\n\n"
-            "  streamlit run streamlit_app.py\n",
-            file=sys.stderr,
-        )
-        raise SystemExit(2)
-
     main()
