@@ -1,0 +1,4 @@
+# 与 streamlit_app.py 内联样式配合：避免无样式时先闪白底
+[theme]
+base = "dark"
+primaryColor = "#6366f1"

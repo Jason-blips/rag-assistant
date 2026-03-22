@@ -120,7 +120,7 @@ def _chat_stream_request(
     return _parse_sse_lines(resp)
 
 
-def _backend_reachable(backend_url: str, *, timeout: float = 0.5) -> bool:
+def _backend_reachable(backend_url: str, *, timeout: float = 0.25) -> bool:
     base = (backend_url or "").rstrip("/")
     if not base:
         return False
@@ -137,10 +137,8 @@ def _backend_reachable(backend_url: str, *, timeout: float = 0.5) -> bool:
         return False
 
 
-def _backend_status_cached(backend_url: str, ttl_sec: float = 20.0) -> bool:
-    """
-    健康检查带短时缓存，避免 Streamlit 每次 rerun 都打 HTTP（离线时原逻辑最多卡约 4s）。
-    """
+def _topbar_badge_from_cache(backend_url: str, ttl_sec: float = 20.0) -> tuple[str, str]:
+    """仅读缓存，不发起请求；无缓存时用于先画 UI 再延迟探测。"""
     now = time.monotonic()
     cache = st.session_state.get("_backend_ping")
     if (
@@ -148,10 +146,24 @@ def _backend_status_cached(backend_url: str, ttl_sec: float = 20.0) -> bool:
         and cache.get("url") == backend_url
         and (now - float(cache.get("t", 0))) < ttl_sec
     ):
-        return bool(cache.get("ok"))
+        ok = bool(cache.get("ok"))
+        return ("在线", "ok") if ok else ("离线", "bad")
+    return ("检测中", "pending")
+
+
+def _deferred_backend_ping(backend_url: str, ttl_sec: float = 20.0) -> None:
+    """在页面主体渲染之后调用：缓存过期则探测一次并 rerun 刷新顶栏（避免阻塞首屏主区域）。"""
+    now = time.monotonic()
+    cache = st.session_state.get("_backend_ping")
+    if (
+        isinstance(cache, dict)
+        and cache.get("url") == backend_url
+        and (now - float(cache.get("t", 0))) < ttl_sec
+    ):
+        return
     ok = _backend_reachable(backend_url)
     st.session_state["_backend_ping"] = {"url": backend_url, "t": now, "ok": ok}
-    return ok
+    st.rerun()
 
 
 def _submit_feedback(
@@ -211,14 +223,26 @@ def _inject_ui_style() -> None:
         background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%) !important;
         border-right: 1px solid rgba(148, 163, 184, 0.22) !important;
     }
+    [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3,
+    [data-testid="stSidebar"] h4, [data-testid="stSidebar"] h5, [data-testid="stSidebar"] h6 {
+        color: #f1f5f9 !important;
+        font-weight: 600 !important;
+    }
     [data-testid="stSidebar"] [data-testid="stMarkdown"] p,
     [data-testid="stSidebar"] [data-testid="stMarkdown"] span,
     [data-testid="stSidebar"] [data-testid="stCaption"] {
-        color: #cbd5e1 !important;
+        color: #e2e8f0 !important;
     }
     [data-testid="stSidebar"] .stButton > button {
         justify-content: flex-start !important;
         text-align: left !important;
+    }
+    /* 侧栏主按钮不要用默认刺眼的红色 */
+    [data-testid="stSidebar"] button[kind="primary"],
+    [data-testid="stSidebar"] [data-testid="baseButton-primary"] {
+        background: linear-gradient(180deg, #6366f1 0%, #4f46e5 100%) !important;
+        border-color: #4338ca !important;
+        color: #ffffff !important;
     }
     [data-testid="stDecoration"] {display: none;}
     [data-testid="stDeployButton"] {display: none;}
@@ -282,6 +306,7 @@ def _inject_ui_style() -> None:
     }
     .neo-status.ok { color: #6ee7b7; background: rgba(16, 185, 129, 0.12); border-color: rgba(52, 211, 153, 0.35); }
     .neo-status.bad { color: #fca5a5; background: rgba(248, 113, 113, 0.12); border-color: rgba(248, 113, 113, 0.35); }
+    .neo-status.pending { color: #fde68a; background: rgba(251, 191, 36, 0.12); border-color: rgba(251, 191, 36, 0.35); }
     /* 主对话面板：用 .block-container 限定，避免 section.main 在部分版本下匹配不到 */
     .block-container > div [data-testid="stVerticalBlockBorderWrapper"] {
         background: var(--neo-panel) !important;
@@ -311,6 +336,12 @@ def _inject_ui_style() -> None:
         gap: 0.65rem !important;
         align-items: flex-start !important;
     }
+    /* 避免正文列 flex 撑满整行，否则气泡会被拉成一条 */
+    [data-testid="stChatMessage"] > div > div:has([data-testid="stMarkdownContainer"]) {
+        flex: 0 1 auto !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+    }
     /* 头像：覆盖默认橙/红底 */
     [data-testid="chatAvatarIcon-assistant"],
     [data-testid="chatAvatarIcon-user"] {
@@ -326,8 +357,13 @@ def _inject_ui_style() -> None:
     [data-testid="stChatMessage"] [data-baseweb="avatar"] {
         background: linear-gradient(145deg, #6366f1, #7c3aed) !important;
     }
-    /* 每条消息正文：默认浅色底+深色字（不依赖 :has，避免旧浏览器/无头像节点时整段看不见） */
+    /* 每条消息正文：浅色气泡；inline-block + max-width 让短句随文字变窄，长文仍自动换行 */
     [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] {
+        display: inline-block !important;
+        vertical-align: top !important;
+        width: auto !important;
+        max-width: min(100%, 42rem) !important;
+        box-sizing: border-box !important;
         background: var(--neo-assistant-bg) !important;
         border: 1px solid var(--neo-line) !important;
         border-radius: 14px !important;
@@ -538,10 +574,8 @@ def main():
         layout="wide",
         initial_sidebar_state="expanded",
     )
-    # 大段 CSS 只注入一次，减轻每次 rerun 的解析与 DOM 写入
-    if not st.session_state.get("_neo_css_injected"):
-        _inject_ui_style()
-        st.session_state["_neo_css_injected"] = True
+    # 每次 run 都注入：Streamlit rerun 会重建 DOM，只注入一次会导致样式块丢失后整页退回默认浅色
+    _inject_ui_style()
 
     # ---------- 多会话（侧边栏）：兼容旧版仅有 message / session_id ----------
     if "conversations" not in st.session_state:
@@ -608,9 +642,7 @@ def main():
     backend_default = os.getenv(
         "RAG_BACKEND_URL", "http://127.0.0.1:8000"
     ).rstrip("/")
-    backend_status = _backend_status_cached(backend_default)
-    status_text = "在线" if backend_status else "离线"
-    status_class = "ok" if backend_status else "bad"
+    status_text, status_class = _topbar_badge_from_cache(backend_default)
     st.markdown(
         f"""
 <div class="neo-topbar">
@@ -926,6 +958,8 @@ def main():
         st.session_state["_run_stream_for"] = prompt
         _touch_active_conversation()
         st.rerun()
+
+    _deferred_backend_ping(backend_default)
 
 
 # streamlit run 会执行本文件且 __name__ 为 __main__；部分版本下 get_script_run_ctx()
