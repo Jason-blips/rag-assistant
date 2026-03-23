@@ -1,5 +1,5 @@
 """
-对话式问答界面（Streamlit），与 web_app.py 共用同一套 RAG 逻辑。
+对话式问答界面（Streamlit）；问答由 FastAPI 后端 `backend_api.py` 提供。
 
 必须用 Streamlit 进程启动（否则无 ScriptRunContext，session_state 不工作）：
 

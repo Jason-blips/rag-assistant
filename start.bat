@@ -1,15 +1,7 @@
 @echo off
-REM 1. 激活虚拟环境
-call D:\ai_env\venv\Scripts\activate.bat
-
-REM 2. 切到项目目录
-cd /d D:\ai_env\venv\rag_study
-
-REM 4. 启动 Web 页面（Gradio）
-python web_app.py
-
-REM 3. 先启动浏览器（不会阻塞）
-start "" "http://127.0.0.1:7860"
-
-REM 5. 结束后按任意键关闭窗口（方便看日志）
+cd /d "%~dp0"
+REM 若未全局安装依赖，请先在本窗口执行： path\to\venv\Scripts\activate.bat
+start "RAG-API" cmd /k "cd /d \"%~dp0\" && uvicorn backend_api:app --host 127.0.0.1 --port 8000"
+timeout /t 2 /nobreak >nul
+streamlit run streamlit_app.py
 pause

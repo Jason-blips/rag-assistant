@@ -5,7 +5,6 @@ langchain-huggingface
 chromadb
 sentence-transformers
 dashscope
-gradio
 streamlit>=1.33.0
 pyperclip
 fastapi
