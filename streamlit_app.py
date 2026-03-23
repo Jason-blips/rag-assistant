@@ -117,7 +117,7 @@ def _parse_sse_lines(resp: requests.Response) -> Iterator[Dict[str, Any]]:
                 yield json.loads(payload_str)
 
 
-def _chat_stream_request(
+def _chat_stream_post(
     *,
     backend_url: str,
     session_id: str,
@@ -130,7 +130,7 @@ def _chat_stream_request(
     collection_name: str,
     embedding_model: str,
     llm_model: str,
-) -> Iterator[Dict[str, Any]]:
+) -> requests.Response:
     req_payload = {
         "question": prompt,
         "session_id": session_id,
@@ -143,7 +143,6 @@ def _chat_stream_request(
         "embedding_model": embedding_model,
         "llm_model": llm_model,
     }
-
     resp = _http_session().post(
         f"{backend_url}/chat/stream",
         json=req_payload,
@@ -151,7 +150,23 @@ def _chat_stream_request(
         timeout=600,
     )
     resp.raise_for_status()
-    return _parse_sse_lines(resp)
+    return resp
+
+
+# 每次 rerun 只消费一批 SSE，才能渲染「停止生成」并关闭连接
+_STREAM_BATCH_SIZE = 12
+
+
+def _clear_stream_ui_state() -> None:
+    """关闭流式 HTTP 连接并清理 session_state 中的迭代器（切换会话/停止时调用）。"""
+    r = st.session_state.pop("_stream_resp", None)
+    if r is not None:
+        try:
+            r.close()
+        except Exception:
+            pass
+    st.session_state.pop("_stream_event_iter", None)
+    st.session_state.pop("_stream_acc", None)
 
 
 def _backend_reachable(backend_url: str, *, timeout: float = 0.25) -> bool:
@@ -839,6 +854,7 @@ def _apply_backup_payload(data: Dict[str, Any]) -> None:
     st.session_state["conversations"] = convs
     st.session_state["active_conv_id"] = aid
     st.session_state["_conv_switched"] = True
+    _clear_stream_ui_state()
     st.session_state["_run_stream_for"] = None
     st.session_state["feedback_state"] = {}
 
@@ -862,6 +878,7 @@ def _render_sidebar_chats() -> None:
             }
             st.session_state["active_conv_id"] = new_cid
             st.session_state["_conv_switched"] = True
+            _clear_stream_ui_state()
             st.session_state["_run_stream_for"] = None
             st.rerun()
         st.divider()
@@ -881,6 +898,7 @@ def _render_sidebar_chats() -> None:
                 if cid != st.session_state["active_conv_id"]:
                     st.session_state["active_conv_id"] = cid
                     st.session_state["_conv_switched"] = True
+                    _clear_stream_ui_state()
                     st.session_state["_run_stream_for"] = None
                     st.rerun()
         _aid = st.session_state.get("active_conv_id")
@@ -1000,6 +1018,7 @@ def main():
     st.session_state["session_id"] = _conv["session_id"]
 
     if st.session_state.pop("_conv_switched", False):
+        _clear_stream_ui_state()
         st.session_state["memory"] = _memory_from_messages(
             st.session_state["message"]
         )
@@ -1177,95 +1196,174 @@ def main():
                 history_payload = _api_chat_history(
                     st.session_state["message"]
                 )
-                # 生成过程放在聊天气泡外：仅 st.spinner + 正文，完成后写入历史再以气泡展示
+                # 分块消费 SSE + 多次 rerun，才能在本页渲染「停止生成」并关闭连接
+                if "_stream_event_iter" not in st.session_state:
+                    try:
+                        resp = _chat_stream_post(
+                            backend_url=backend_url,
+                            session_id=st.session_state["session_id"],
+                            prompt=stream_prompt,
+                            history=history_payload,
+                            k=k,
+                            use_llm=use_llm,
+                            use_reranker=use_reranker,
+                            persist_dir=persist_dir,
+                            collection_name=collection_name,
+                            embedding_model=embedding_model,
+                            llm_model=llm_model,
+                        )
+                        st.session_state["_stream_resp"] = resp
+                        st.session_state["_stream_event_iter"] = iter(
+                            _parse_sse_lines(resp)
+                        )
+                        st.session_state["_stream_acc"] = {
+                            "context_text": "",
+                            "current_answer": "",
+                            "route_meta": None,
+                            "spinner_cleared": False,
+                        }
+                    except requests.RequestException as e:
+                        _clear_stream_ui_state()
+                        err = f"后端请求失败：{e}"
+                        st.session_state["message"].append(
+                            {
+                                "id": str(uuid.uuid4()),
+                                "role": "assistant",
+                                "content": err,
+                                "question": stream_prompt,
+                                "meta": None,
+                            }
+                        )
+                        st.session_state["memory"].chat_memory.add_ai_message(
+                            err
+                        )
+                        _touch_active_conversation()
+                        st.session_state["_run_stream_for"] = None
+                        st.rerun()
+
+                acc = st.session_state.get("_stream_acc")
+                if acc is None:
+                    st.session_state["_run_stream_for"] = None
+                    st.rerun()
+
                 thinking_slot = st.empty()
                 context_placeholder = st.empty()
                 answer_area = st.empty()
-                context_text = ""
-                current_answer = ""
-                route_meta = None
-                spinner_cleared = False
 
-                def _end_thinking() -> None:
-                    nonlocal spinner_cleared
-                    if not spinner_cleared:
-                        thinking_slot.empty()
-                        spinner_cleared = True
+                sc1, _sc2 = st.columns([1, 5])
+                with sc1:
+                    if st.button(
+                        "停止生成",
+                        key="stop_stream_gen",
+                        type="secondary",
+                    ):
+                        ca = (acc.get("current_answer") or "").strip()
+                        ctx = (acc.get("context_text") or "").strip()
+                        rm = acc.get("route_meta")
+                        _clear_stream_ui_state()
+                        if ca:
+                            final = ca + "\n\n（已停止生成）"
+                        elif ctx:
+                            final = ctx + "\n\n（已停止生成）"
+                        else:
+                            final = "（已停止生成）"
+                        st.session_state["message"].append(
+                            {
+                                "id": str(uuid.uuid4()),
+                                "role": "assistant",
+                                "content": final,
+                                "question": stream_prompt,
+                                "meta": rm,
+                            }
+                        )
+                        st.session_state["memory"].chat_memory.add_ai_message(
+                            final
+                        )
+                        if rm:
+                            st.session_state["last_route_meta"] = rm
+                        _touch_active_conversation()
+                        st.session_state["_run_stream_for"] = None
+                        st.rerun()
 
-                try:
+                if not acc.get("spinner_cleared"):
                     with thinking_slot:
                         with st.spinner("AI 正在思考中"):
-                            for event in _chat_stream_request(
-                                backend_url=backend_url,
-                                session_id=st.session_state["session_id"],
-                                prompt=stream_prompt,
-                                history=history_payload,
-                                k=k,
-                                use_llm=use_llm,
-                                use_reranker=use_reranker,
-                                persist_dir=persist_dir,
-                                collection_name=collection_name,
-                                embedding_model=embedding_model,
-                                llm_model=llm_model,
-                            ):
-                                event_type = event.get("type")
-                                event_content = event.get("content") or ""
-                                if event_type == "context":
-                                    context_text = event_content
-                                    if (
-                                        event_content.strip()
-                                        and event_content.strip()
-                                        != "没有检索到所需内容"
-                                    ):
-                                        _end_thinking()
-                                        with context_placeholder.container():
-                                            with st.expander(
-                                                "相关摘录",
-                                                expanded=False,
-                                            ):
-                                                context_area = st.empty()
-                                                context_area.markdown(
-                                                    event_content
-                                                )
-                                    else:
-                                        context_placeholder.empty()
-                                elif event_type == "answer":
-                                    _end_thinking()
-                                    current_answer = event_content
-                                    answer_area.markdown(current_answer)
-                                elif event_type == "meta":
-                                    route_meta = event_content
-                                elif event_type == "done":
-                                    if not current_answer and event_content:
-                                        current_answer = event_content
-                                        _end_thinking()
-                                        answer_area.markdown(current_answer)
-                                elif event_type == "error":
-                                    _end_thinking()
-                                    answer_area.markdown(
-                                        f"错误：{event_content}"
-                                    )
-                                    current_answer = event_content
-                except requests.RequestException as e:
-                    _end_thinking()
-                    current_answer = f"后端请求失败：{e}"
-                    answer_area.markdown(current_answer)
-                finally:
-                    if route_meta:
-                        st.session_state["last_route_meta"] = route_meta
-                        route_mode = route_meta.get("route_mode", "-")
-                        trace_id = route_meta.get("trace_id", "-")
-                        match_score = route_meta.get("match_score")
-                        kb_max_score = route_meta.get("kb_max_score")
-                        topic = route_meta.get("topic", "-")
-                        match_gate = route_meta.get("match_gate")
-                        usable_threshold = route_meta.get("usable_threshold")
-                        knowledge_version = route_meta.get(
-                            "knowledge_version", "-"
-                        )
-                        if show_debug:
-                            st.markdown(
-                                """
+                            st.caption(" ")
+                else:
+                    thinking_slot.empty()
+
+                it = st.session_state["_stream_event_iter"]
+                stream_done = False
+                for _ in range(_STREAM_BATCH_SIZE):
+                    try:
+                        event = next(it)
+                    except StopIteration:
+                        stream_done = True
+                        break
+                    event_type = event.get("type")
+                    event_content = event.get("content") or ""
+                    if event_type == "context":
+                        acc["context_text"] = event_content
+                        if (
+                            event_content.strip()
+                            and event_content.strip()
+                            != "没有检索到所需内容"
+                        ):
+                            acc["spinner_cleared"] = True
+                            with context_placeholder.container():
+                                with st.expander(
+                                    "相关摘录",
+                                    expanded=False,
+                                ):
+                                    st.markdown(event_content)
+                        else:
+                            context_placeholder.empty()
+                    elif event_type == "answer":
+                        acc["spinner_cleared"] = True
+                        acc["current_answer"] = event_content
+                        answer_area.markdown(event_content)
+                    elif event_type == "meta":
+                        if isinstance(event_content, dict):
+                            acc["route_meta"] = event_content
+                    elif event_type == "done":
+                        if (
+                            not (acc.get("current_answer") or "").strip()
+                            and event_content
+                        ):
+                            acc["current_answer"] = event_content
+                            answer_area.markdown(event_content)
+                        acc["spinner_cleared"] = True
+                        stream_done = True
+                        break
+                    elif event_type == "error":
+                        acc["spinner_cleared"] = True
+                        acc["current_answer"] = f"错误：{event_content}"
+                        answer_area.markdown(acc["current_answer"])
+                        stream_done = True
+                        break
+
+                if not stream_done:
+                    st.rerun()
+
+                current_answer = acc.get("current_answer") or ""
+                context_text = acc.get("context_text") or ""
+                route_meta = acc.get("route_meta")
+
+                if route_meta:
+                    st.session_state["last_route_meta"] = route_meta
+                    route_mode = route_meta.get("route_mode", "-")
+                    trace_id = route_meta.get("trace_id", "-")
+                    match_score = route_meta.get("match_score")
+                    kb_max_score = route_meta.get("kb_max_score")
+                    topic = route_meta.get("topic", "-")
+                    match_gate = route_meta.get("match_gate")
+                    usable_threshold = route_meta.get("usable_threshold")
+                    knowledge_version = route_meta.get(
+                        "knowledge_version", "-"
+                    )
+                    if show_debug:
+                        st.markdown(
+                            """
 <div class="meta-box">
   <span class="chip">route: {route_mode}</span>
   <span class="chip">topic: {topic}</span>
@@ -1277,38 +1375,40 @@ def main():
   <span class="chip">trace: {trace_id}</span>
 </div>
 """.format(
-                                    route_mode=_safe_text(route_mode),
-                                    topic=_safe_text(topic),
-                                    match_score=_safe_text(match_score),
-                                    match_gate=_safe_text(match_gate),
-                                    kb_max_score=_safe_text(kb_max_score),
-                                    usable_threshold=_safe_text(
-                                        usable_threshold
-                                    ),
-                                    knowledge_version=_safe_text(
-                                        knowledge_version
-                                    ),
-                                    trace_id=_safe_text(trace_id),
+                                route_mode=_safe_text(route_mode),
+                                topic=_safe_text(topic),
+                                match_score=_safe_text(match_score),
+                                match_gate=_safe_text(match_gate),
+                                kb_max_score=_safe_text(kb_max_score),
+                                usable_threshold=_safe_text(
+                                    usable_threshold
                                 ),
-                                unsafe_allow_html=True,
-                            )
-                        source_refs = route_meta.get("source_refs") or []
-                        if isinstance(source_refs, list):
-                            source_refs = [x for x in source_refs if isinstance(x, dict)]
-                        else:
-                            source_refs = []
-                        if source_refs:
-                            with st.expander(
-                                f"来源（{len(source_refs)}）",
-                                expanded=False,
-                            ):
-                                _render_source_refs_list(source_refs)
-                        if route_meta.get("degraded"):
-                            suggestions = route_meta.get("suggestions") or []
-                            if suggestions:
-                                with st.expander("参考问法", expanded=False):
-                                    for s in suggestions[:3]:
-                                        st.markdown(f"- {s}")
+                                knowledge_version=_safe_text(
+                                    knowledge_version
+                                ),
+                                trace_id=_safe_text(trace_id),
+                            ),
+                            unsafe_allow_html=True,
+                        )
+                    source_refs = route_meta.get("source_refs") or []
+                    if isinstance(source_refs, list):
+                        source_refs = [
+                            x for x in source_refs if isinstance(x, dict)
+                        ]
+                    else:
+                        source_refs = []
+                    if source_refs:
+                        with st.expander(
+                            f"来源（{len(source_refs)}）",
+                            expanded=False,
+                        ):
+                            _render_source_refs_list(source_refs)
+                    if route_meta.get("degraded"):
+                        suggestions = route_meta.get("suggestions") or []
+                        if suggestions:
+                            with st.expander("参考问法", expanded=False):
+                                for s in suggestions[:3]:
+                                    st.markdown(f"- {s}")
 
                 if not current_answer.strip() and use_llm is False:
                     current_answer = context_text
@@ -1316,7 +1416,9 @@ def main():
                     if not use_llm:
                         current_answer = context_text or "未检索到相关段落。"
                     else:
-                        current_answer = "未获取到模型输出（请检查后端/网络/密钥）。"
+                        current_answer = (
+                            "未获取到模型输出（请检查后端/网络/密钥）。"
+                        )
 
                 st.session_state["message"].append(
                     {
@@ -1331,6 +1433,7 @@ def main():
                     current_answer
                 )
                 _touch_active_conversation()
+                _clear_stream_ui_state()
                 st.session_state["_run_stream_for"] = None
                 st.rerun()
 
