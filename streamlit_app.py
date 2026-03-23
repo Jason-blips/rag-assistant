@@ -788,6 +788,28 @@ def _regenerate_assistant_message(msg_id: str, messages: List[Dict[str, Any]]) -
     return True
 
 
+def _edit_last_user_and_resend(user_idx: int, new_text: str) -> None:
+    """截断该用户消息之后的所有轮次，更新用户文本并重新发起流式生成。"""
+    msgs = st.session_state["message"]
+    if user_idx < 0 or user_idx >= len(msgs):
+        return
+    if msgs[user_idx].get("role") != "user":
+        return
+    nt = new_text.strip()
+    if not nt:
+        return
+    for _m in msgs[user_idx + 1 :]:
+        _oid = _m.get("id")
+        if _oid:
+            st.session_state["feedback_state"].pop(_oid, None)
+    del msgs[user_idx + 1 :]
+    msgs[user_idx]["content"] = nt
+    st.session_state["memory"] = _memory_from_messages(msgs)
+    _clear_stream_ui_state()
+    st.session_state["_run_stream_for"] = nt
+    _touch_active_conversation()
+
+
 def _conversation_to_markdown(title: str, messages: List[Dict[str, Any]]) -> str:
     lines = [
         f"# {title}",
@@ -1069,9 +1091,46 @@ def main():
                     last_assistant_id = str(m["id"])
                     break
 
-            for message in st.session_state["message"]:
+            last_user_idx: int | None = None
+            for _ui, _um in enumerate(st.session_state["message"]):
+                if _um.get("role") == "user":
+                    last_user_idx = _ui
+
+            _stream_busy = bool(
+                st.session_state.get("_run_stream_for")
+            ) or ("_stream_event_iter" in st.session_state)
+
+            for idx, message in enumerate(st.session_state["message"]):
                 with st.chat_message(message["role"]):
                     st.markdown(message["content"])
+                    if message["role"] == "user":
+                        if (
+                            last_user_idx is not None
+                            and idx == last_user_idx
+                            and not _stream_busy
+                        ):
+                            _eid = st.session_state.get(
+                                "active_conv_id", "default"
+                            )
+                            _ta_key = f"edit_last_user_{_eid}"
+                            with st.expander("编辑并重发", expanded=False):
+                                _edited = st.text_area(
+                                    "内容",
+                                    value=message.get("content") or "",
+                                    height=96,
+                                    key=_ta_key,
+                                )
+                                if st.button(
+                                    "保存并重新生成",
+                                    key=f"{_ta_key}_submit",
+                                    type="primary",
+                                ):
+                                    _nt = (_edited or "").strip()
+                                    if not _nt:
+                                        st.warning("内容不能为空")
+                                    else:
+                                        _edit_last_user_and_resend(idx, _nt)
+                                        st.rerun()
                     if message["role"] == "assistant" and message.get("content"):
                         _meta = message.get("meta")
                         _refs: List[Dict[str, Any]] = []
