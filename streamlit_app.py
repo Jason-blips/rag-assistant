@@ -1113,17 +1113,20 @@ def main():
                                 "active_conv_id", "default"
                             )
                             _ta_key = f"edit_last_user_{_eid}"
-                            with st.expander("编辑并重发", expanded=False):
+                            with st.popover("改提问", help="改字后重新生成本条回答"):
                                 _edited = st.text_area(
-                                    "内容",
+                                    " ",
                                     value=message.get("content") or "",
-                                    height=96,
+                                    height=72,
                                     key=_ta_key,
+                                    label_visibility="collapsed",
+                                    placeholder="修改问题…",
                                 )
                                 if st.button(
-                                    "保存并重新生成",
+                                    "重新生成",
                                     key=f"{_ta_key}_submit",
                                     type="primary",
+                                    use_container_width=True,
                                 ):
                                     _nt = (_edited or "").strip()
                                     if not _nt:
@@ -1309,47 +1312,47 @@ def main():
                 context_placeholder = st.empty()
                 answer_area = st.empty()
 
-                sc1, _sc2 = st.columns([1, 5])
-                with sc1:
-                    if st.button(
-                        "停止生成",
-                        key="stop_stream_gen",
-                        type="secondary",
-                    ):
-                        ca = (acc.get("current_answer") or "").strip()
-                        ctx = (acc.get("context_text") or "").strip()
-                        rm = acc.get("route_meta")
-                        _clear_stream_ui_state()
-                        if ca:
-                            final = ca + "\n\n（已停止生成）"
-                        elif ctx:
-                            final = ctx + "\n\n（已停止生成）"
-                        else:
-                            final = "（已停止生成）"
-                        st.session_state["message"].append(
-                            {
-                                "id": str(uuid.uuid4()),
-                                "role": "assistant",
-                                "content": final,
-                                "question": stream_prompt,
-                                "meta": rm,
-                            }
-                        )
-                        st.session_state["memory"].chat_memory.add_ai_message(
-                            final
-                        )
-                        if rm:
-                            st.session_state["last_route_meta"] = rm
-                        _touch_active_conversation()
-                        st.session_state["_run_stream_for"] = None
-                        st.rerun()
-
                 if not acc.get("spinner_cleared"):
                     with thinking_slot:
                         with st.spinner("AI 正在思考中"):
                             st.caption(" ")
                 else:
                     thinking_slot.empty()
+
+                if st.button(
+                    "停止",
+                    key="stop_stream_gen",
+                    type="secondary",
+                    help="停止生成当前回答",
+                    use_container_width=True,
+                ):
+                    ca = (acc.get("current_answer") or "").strip()
+                    ctx = (acc.get("context_text") or "").strip()
+                    rm = acc.get("route_meta")
+                    _clear_stream_ui_state()
+                    if ca:
+                        final = ca + "\n\n（已停止生成）"
+                    elif ctx:
+                        final = ctx + "\n\n（已停止生成）"
+                    else:
+                        final = "（已停止生成）"
+                    st.session_state["message"].append(
+                        {
+                            "id": str(uuid.uuid4()),
+                            "role": "assistant",
+                            "content": final,
+                            "question": stream_prompt,
+                            "meta": rm,
+                        }
+                    )
+                    st.session_state["memory"].chat_memory.add_ai_message(
+                        final
+                    )
+                    if rm:
+                        st.session_state["last_route_meta"] = rm
+                    _touch_active_conversation()
+                    st.session_state["_run_stream_for"] = None
+                    st.rerun()
 
                 it = st.session_state["_stream_event_iter"]
                 stream_done = False
