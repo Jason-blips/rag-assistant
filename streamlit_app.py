@@ -25,14 +25,6 @@ from vectorstore_utils import (
     DEFAULT_PERSIST_DIR,
 )
 
-# 首屏冷启动：一键示例问题（降低空窗与输入成本）
-_STARTER_PROMPTS: List[str] = [
-    "这门课主要讲什么？",
-    "什么是检索增强生成（RAG）？",
-    "知识库里的内容从哪来？",
-]
-
-
 def _welcome_messages() -> List[Dict[str, Any]]:
     return [{"role": "assistant", "content": "您好，有什么可以帮助你？"}]
 
@@ -51,14 +43,37 @@ def _memory_from_messages(messages: List[Dict[str, Any]]) -> ConversationBufferM
     return mem
 
 
-def _conv_title_from_messages(
-    messages: List[Dict[str, Any]], fallback: str = "新对话"
-) -> str:
-    for m in messages:
-        if m.get("role") == "user" and (m.get("content") or "").strip():
-            t = (m.get("content") or "").strip().replace("\n", " ")
-            return (t[:28] + "…") if len(t) > 28 else t
-    return fallback
+def _ensure_session_numbers(convs: Dict[str, Any]) -> None:
+    """每条会话固定编号 session_no，侧栏显示「会话 N」；旧数据无编号时按 updated_at 升序补齐。"""
+    if not convs:
+        return
+    max_sn = 0
+    for c in convs.values():
+        sn = c.get("session_no")
+        if isinstance(sn, int):
+            max_sn = max(max_sn, sn)
+    ordered = sorted(
+        convs.items(),
+        key=lambda x: float(x[1].get("updated_at", 0)),
+    )
+    for _cid, c in ordered:
+        if not isinstance(c.get("session_no"), int):
+            max_sn += 1
+            c["session_no"] = max_sn
+    for c in convs.values():
+        sn = c.get("session_no")
+        if isinstance(sn, int):
+            c["title"] = f"会话 {sn}"
+
+
+def _next_session_no(convs: Dict[str, Any]) -> int:
+    _ensure_session_numbers(convs)
+    mx = 0
+    for c in convs.values():
+        sn = c.get("session_no")
+        if isinstance(sn, int):
+            mx = max(mx, sn)
+    return mx + 1
 
 
 def _touch_active_conversation() -> None:
@@ -68,7 +83,6 @@ def _touch_active_conversation() -> None:
         return
     conv = convs[cid]
     conv["updated_at"] = time.time()
-    conv["title"] = _conv_title_from_messages(conv["messages"])
 
 
 def _api_chat_history(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
@@ -225,6 +239,8 @@ def _inject_ui_style() -> None:
 <style>
     :root {
         --neo-bg: #0b0d12;
+        /* 与 .block-container 一致，主栏与底部输入同一视觉宽度 */
+        --neo-content-max: 44rem;
         /* 主面板与气泡用灰蓝系，避免纯白刺眼 */
         --neo-panel: #e8ecf2;
         --neo-ink: #0f172a;
@@ -239,44 +255,75 @@ def _inject_ui_style() -> None:
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header[data-testid="stHeader"] {background: transparent !important;}
-    [data-testid="stToolbar"] {display: none;}
+    /* 勿隐藏整条 stToolbar：新版 Streamlit 的「展开/收起侧栏」按钮在工具栏内，隐藏后侧栏被收起就再也打不开 */
+    [data-testid="stToolbar"] {visibility: visible !important; display: flex !important;}
+    /* 侧栏：与主区同系深灰，避免蓝紫渐变与亮主色 */
     [data-testid="stSidebar"] > div:first-child {
-        background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%) !important;
-        border-right: 1px solid rgba(148, 163, 184, 0.22) !important;
+        background: #1a1a1a !important;
+        border-right: 1px solid rgba(255, 255, 255, 0.06) !important;
     }
     [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3,
     [data-testid="stSidebar"] h4, [data-testid="stSidebar"] h5, [data-testid="stSidebar"] h6 {
-        color: #f1f5f9 !important;
-        font-weight: 600 !important;
+        color: #a3a3a3 !important;
+        font-weight: 500 !important;
     }
     [data-testid="stSidebar"] [data-testid="stMarkdown"] p,
     [data-testid="stSidebar"] [data-testid="stMarkdown"] span,
     [data-testid="stSidebar"] [data-testid="stCaption"] {
-        color: #e2e8f0 !important;
+        color: #a3a3a3 !important;
     }
     [data-testid="stSidebar"] .stButton > button {
         justify-content: flex-start !important;
         text-align: left !important;
     }
-    /* 侧栏主按钮不要用默认刺眼的红色 */
     [data-testid="stSidebar"] button[kind="primary"],
     [data-testid="stSidebar"] [data-testid="baseButton-primary"] {
-        background: linear-gradient(180deg, #6366f1 0%, #4f46e5 100%) !important;
-        border-color: #4338ca !important;
-        color: #ffffff !important;
+        background: #2a2a2a !important;
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        color: #e5e5e5 !important;
+        box-shadow: none !important;
+    }
+    [data-testid="stSidebar"] button[kind="primary"]:hover,
+    [data-testid="stSidebar"] [data-testid="baseButton-primary"]:hover {
+        background: #333333 !important;
+        border-color: rgba(255, 255, 255, 0.14) !important;
+        color: #f5f5f5 !important;
+    }
+    [data-testid="stSidebar"] button[kind="secondary"],
+    [data-testid="stSidebar"] [data-testid="baseButton-secondary"] {
+        background: rgba(255, 255, 255, 0.04) !important;
+        border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        color: #d4d4d4 !important;
+        box-shadow: none !important;
+    }
+    [data-testid="stSidebar"] button[kind="secondary"]:hover,
+    [data-testid="stSidebar"] [data-testid="baseButton-secondary"]:hover {
+        background: rgba(255, 255, 255, 0.08) !important;
+        border-color: rgba(255, 255, 255, 0.12) !important;
+        color: #f5f5f5 !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stExpander"] {
+        border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        background: rgba(0, 0, 0, 0.15) !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stExpander"] summary,
+    [data-testid="stSidebar"] [data-testid="stExpander"] summary span {
+        color: #a3a3a3 !important;
     }
     [data-testid="stDecoration"] {display: none;}
     [data-testid="stDeployButton"] {display: none;}
     .stApp {
-        background: radial-gradient(ellipse 90% 55% at 50% -18%, rgba(99, 102, 241, 0.16), transparent),
-            linear-gradient(180deg, #334155 0%, #475569 42%, #64748b 100%) !important;
+        /* ChatGPT 式：中性深灰底，减少大面积紫渐变 */
+        background: #212121 !important;
     }
     /* 勿在 .stApp 上写死深色字：聊天区若未套上浅色气泡会与深色底叠在一起看不见 */
     /* chat_input 固定在底部（stBottom），主区需多留底边距，否则最后几条消息像被「压住」 */
     .block-container {
         padding-top: 1.25rem;
         padding-bottom: 7.5rem;
-        max-width: 44rem !important;
+        max-width: var(--neo-content-max) !important;
+        margin-left: auto !important;
+        margin-right: auto !important;
         color: #e2e8f0;
         background: transparent !important;
     }
@@ -291,11 +338,27 @@ def _inject_ui_style() -> None:
     }
     /* 底部 Dock：与背景融在一起，减轻「整块盖在内容上」的悬浮感 */
     [data-testid="stBottom"] {
-        background: linear-gradient(180deg, rgba(51, 65, 85, 0) 0%, rgba(71, 85, 105, 0.92) 45%, #64748b 100%) !important;
+        background: linear-gradient(180deg, rgba(33, 33, 33, 0) 0%, rgba(33, 33, 33, 0.96) 38%, #212121 100%) !important;
         border-top: none !important;
         padding-top: 0.5rem !important;
         padding-bottom: env(safe-area-inset-bottom, 0) !important;
         box-shadow: none !important;
+    }
+    /* 底部输入与主对话区同宽居中，避免「窄聊宽框」割裂感 */
+    [data-testid="stBottom"] > div {
+        max-width: var(--neo-content-max) !important;
+        margin-left: auto !important;
+        margin-right: auto !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+        box-sizing: border-box !important;
+    }
+    /* 部分版本里输入框在 VerticalBlock 内：只限宽居中，避免与外层 padding 叠加 */
+    [data-testid="stBottom"] [data-testid="stVerticalBlock"] {
+        max-width: var(--neo-content-max) !important;
+        margin-left: auto !important;
+        margin-right: auto !important;
+        box-sizing: border-box !important;
     }
     .neo-topbar {
         display: flex;
@@ -304,11 +367,11 @@ def _inject_ui_style() -> None:
         gap: 0.75rem;
         padding: 0.65rem 1rem;
         margin-bottom: 0;
-        background: linear-gradient(90deg, #1e293b 0%, #0f172a 100%);
-        border: 1px solid rgba(148, 163, 184, 0.2);
-        border-bottom: none;
-        border-radius: 16px 16px 0 0;
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+        background: #2b2b2b !important;
+        border: none !important;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
+        border-radius: 0 !important;
+        box-shadow: none !important;
     }
     .neo-brand {
         font-size: 1.05rem;
@@ -317,11 +380,11 @@ def _inject_ui_style() -> None:
         letter-spacing: -0.02em;
     }
     .neo-tagline {
-        font-size: 0.78rem;
-        color: #cbd5e1;
+        font-size: 0.8125rem;
+        color: #e2e8f0;
         margin-top: 0.2rem;
-        line-height: 1.45;
-        opacity: 0.95;
+        line-height: 1.5;
+        opacity: 0.92;
     }
     .neo-status {
         font-size: 0.7rem;
@@ -334,14 +397,13 @@ def _inject_ui_style() -> None:
     .neo-status.ok { color: #6ee7b7; background: rgba(16, 185, 129, 0.12); border-color: rgba(52, 211, 153, 0.35); }
     .neo-status.bad { color: #fca5a5; background: rgba(248, 113, 113, 0.12); border-color: rgba(248, 113, 113, 0.35); }
     .neo-status.pending { color: #fde68a; background: rgba(251, 191, 36, 0.12); border-color: rgba(251, 191, 36, 0.35); }
-    /* 主对话区：与顶栏衔接，半透明底即可，正文为「文档流」而非白气泡卡片 */
+    /* 主对话区：扁平画布，接近 ChatGPT 主区 */
     .block-container > div [data-testid="stVerticalBlockBorderWrapper"] {
-        background: rgba(15, 23, 42, 0.28) !important;
-        color: #e2e8f0 !important;
-        border-radius: 0 0 16px 16px !important;
-        border: 1px solid rgba(148, 163, 184, 0.18) !important;
-        border-top: 1px solid rgba(148, 163, 184, 0.12) !important;
-        padding: 0.75rem 0.95rem 1.1rem !important;
+        background: transparent !important;
+        color: #ececec !important;
+        border-radius: 0 !important;
+        border: none !important;
+        padding: 0.5rem 0.25rem 1rem !important;
         box-shadow: none !important;
     }
     .block-container > div [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stVerticalBlockBorderWrapper"] {
@@ -372,15 +434,38 @@ def _inject_ui_style() -> None:
         padding-top: 0.55rem !important;
         border-top: 1px solid rgba(129, 140, 248, 0.22) !important;
     }
-    /* 左侧时间线：只作用于含聊天气泡的列，避免误伤其它布局 */
     .block-container [data-testid="stVerticalBlock"]:has([data-testid="stChatMessage"]) {
-        border-left: 2px solid rgba(99, 102, 241, 0.28) !important;
-        padding-left: 0.75rem !important;
-        margin-left: 0.15rem !important;
+        border-left: none !important;
+        padding-left: 0 !important;
+        margin-left: 0 !important;
     }
     [data-testid="stChatMessage"] > div {
         gap: 0.75rem !important;
         align-items: flex-start !important;
+    }
+    /* 用户：右侧气泡（ChatGPT 式） */
+    [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) > div {
+        flex-direction: row-reverse !important;
+        align-items: flex-end !important;
+        justify-content: flex-start !important;
+    }
+    [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) [data-testid="stMarkdownContainer"] {
+        background: #2f2f2f !important;
+        border-radius: 1.15rem !important;
+        padding: 0.65rem 1rem !important;
+        max-width: min(88%, 34rem) !important;
+        margin-left: auto !important;
+        margin-right: 0 !important;
+        box-sizing: border-box !important;
+    }
+    [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) [data-testid="stMarkdownContainer"] p,
+    [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) [data-testid="stMarkdownContainer"] li {
+        color: #ececec !important;
+    }
+    /* 助手：弱化头像、正文偏文档流 */
+    [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-assistant"]) [data-testid="chatAvatarIcon-assistant"] {
+        opacity: 0.85 !important;
+        transform: scale(0.92);
     }
     [data-testid="stChatMessage"] > div > div:has([data-testid="stMarkdownContainer"]) {
         flex: 1 1 auto !important;
@@ -402,7 +487,7 @@ def _inject_ui_style() -> None:
     [data-testid="stChatMessage"] [data-baseweb="avatar"] {
         background: linear-gradient(145deg, #6366f1, #7c3aed) !important;
     }
-    /* 消息正文：无气泡，与生成区一致为浅色字 + 透明底、通栏排版 */
+    /* 助手消息正文：无气泡、偏 ChatGPT 正文字色 */
     [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] {
         display: block !important;
         width: 100% !important;
@@ -412,14 +497,14 @@ def _inject_ui_style() -> None:
         border: none !important;
         border-radius: 0 !important;
         padding: 0.1rem 0 0.2rem 0 !important;
-        color: #f1f5f9 !important;
-        font-size: 0.95rem !important;
+        color: #ececec !important;
+        font-size: 0.97rem !important;
         line-height: 1.65 !important;
     }
     [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] p,
     [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] li,
     [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] span {
-        color: #e2e8f0 !important;
+        color: #ececec !important;
     }
     [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] a {
         color: #a5b4fc !important;
@@ -467,26 +552,49 @@ def _inject_ui_style() -> None:
     .block-container [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stExpander"] summary span {
         color: #cbd5e1 !important;
     }
-    /* 底部输入：略抬升即可，过重阴影会像「卡片压在内容上」 */
+    /* 底部输入：圆角矩形条，接近 ChatGPT dock */
     [data-testid="stChatInput"] {
-        background: #f0f3f9 !important;
-        border: 1px solid rgba(100, 116, 139, 0.35) !important;
-        border-radius: 999px !important;
-        box-shadow: 0 2px 14px rgba(15, 23, 42, 0.22) !important;
+        background: #2f2f2f !important;
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        border-radius: 1.25rem !important;
+        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35) !important;
     }
     [data-testid="stChatInput"]:focus-within {
-        border-color: var(--neo-brand) !important;
-        box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.22), 0 4px 18px rgba(15, 23, 42, 0.2) !important;
+        border-color: rgba(255, 255, 255, 0.2) !important;
+        box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.06), 0 4px 16px rgba(0, 0, 0, 0.45) !important;
     }
     [data-testid="stChatInput"] textarea {
         font-size: 0.95rem !important;
-        color: var(--neo-ink) !important;
+        color: #e2e8f0 !important;
+        background: transparent !important;
+    }
+    [data-testid="stChatInput"] textarea::placeholder {
+        color: #64748b !important;
     }
     [data-testid="stChatInput"] button {
-        background: var(--neo-brand) !important;
-        color: #ffffff !important;
+        background: #ececec !important;
+        color: #212121 !important;
         border: none !important;
         border-radius: 999px !important;
+    }
+    /* 消息下方操作条：小图标按钮感 */
+    [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-assistant"]) [data-testid="stHorizontalBlock"] {
+        gap: 0.25rem !important;
+        align-items: center !important;
+        margin-top: 0.15rem !important;
+    }
+    [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-assistant"]) [data-testid="stHorizontalBlock"] button {
+        min-height: 2rem !important;
+        padding: 0.15rem 0.45rem !important;
+        font-size: 0.85rem !important;
+        border-radius: 10px !important;
+        background: rgba(255, 255, 255, 0.06) !important;
+        border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        color: #d1d5db !important;
+    }
+    [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-assistant"]) [data-testid="stHorizontalBlock"] button:hover {
+        background: rgba(255, 255, 255, 0.1) !important;
+        color: #f9fafb !important;
     }
     /* 消息内反馈：深色底上的轻量按钮 */
     [data-testid="stChatMessage"] .stButton > button {
@@ -542,13 +650,6 @@ def _inject_ui_style() -> None:
         border-color: #818cf8 !important;
         color: #f8fafc !important;
     }
-    .neo-prompt-hint {
-        font-size: 0.75rem;
-        font-weight: 600;
-        color: #94a3b8;
-        margin: 0.5rem 0 0.4rem 0;
-        letter-spacing: 0.02em;
-    }
     .meta-box {
         border: 1px solid rgba(148, 163, 184, 0.25);
         background: rgba(15, 23, 42, 0.45);
@@ -594,6 +695,16 @@ def _inject_ui_style() -> None:
     .block-container [data-testid="stVerticalBlockBorderWrapper"] .stSpinner span {
         color: #cbd5e1 !important;
     }
+    /* 聊天气泡内的带边框容器（来源等）：与深色主题统一 */
+    [data-testid="stChatMessage"] [data-testid="stVerticalBlockBorderWrapper"] {
+        border-color: rgba(148, 163, 184, 0.28) !important;
+        background: rgba(15, 23, 42, 0.35) !important;
+        border-radius: 12px !important;
+    }
+    [data-testid="stChatMessage"] [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stMarkdownContainer"] p,
+    [data-testid="stChatMessage"] [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stMarkdownContainer"] li {
+        color: #cbd5e1 !important;
+    }
 </style>
 """,
         unsafe_allow_html=True,
@@ -605,6 +716,61 @@ def _safe_text(v: Any) -> str:
         return "-"
     s = str(v).strip()
     return s if s else "-"
+
+
+def _render_source_refs_list(source_refs: List[Dict[str, Any]]) -> None:
+    for r in source_refs:
+        label = r.get("label", "来源")
+        hint = r.get("hint", "")
+        url = r.get("url", "")
+        if url:
+            st.markdown(f"- [{label}]({url})  \n  {hint}")
+        else:
+            st.markdown(f"- {label}  \n  {hint}")
+
+
+def _render_copy_button(text: str, *, btn_key: str) -> None:
+    """用 pyperclip 写入剪贴板，避免 components.html 在部分环境下把脚本当正文显示。"""
+    if st.button("复制", key=btn_key, help="复制本条回答到剪贴板"):
+        try:
+            import pyperclip
+
+            pyperclip.copy(text or "")
+        except ImportError:
+            st.warning("请安装依赖：pip install pyperclip")
+        except Exception:
+            st.warning("无法写入剪贴板，请手动选中文字复制。")
+        else:
+            try:
+                st.toast("已复制", icon="✅")
+            except Exception:
+                st.caption("已复制")
+
+
+def _regenerate_assistant_message(msg_id: str, messages: List[Dict[str, Any]]) -> bool:
+    """删除指定助手消息后，用其对应问题重新发起流式生成。"""
+    idx: int | None = None
+    for i, m in enumerate(messages):
+        if m.get("role") == "assistant" and str(m.get("id")) == str(msg_id):
+            idx = i
+            break
+    if idx is None:
+        return False
+    q = messages[idx].get("question")
+    if not (isinstance(q, str) and q.strip()):
+        for j in range(idx - 1, -1, -1):
+            if messages[j].get("role") == "user":
+                uc = messages[j].get("content")
+                if isinstance(uc, str) and uc.strip():
+                    q = uc
+                break
+    if not (isinstance(q, str) and q.strip()):
+        return False
+    del messages[idx]
+    st.session_state["feedback_state"].pop(msg_id, None)
+    st.session_state["memory"] = _memory_from_messages(messages)
+    st.session_state["_run_stream_for"] = q.strip()
+    return True
 
 
 def _conversation_to_markdown(title: str, messages: List[Dict[str, Any]]) -> str:
@@ -638,15 +804,58 @@ def _export_md_filename(title: str) -> str:
     return f"课程助手_{base}_{time.strftime('%Y%m%d_%H%M%S')}.md"
 
 
+_BACKUP_VERSION = 1
+
+
+def _backup_payload_from_session() -> Dict[str, Any]:
+    convs = st.session_state.get("conversations")
+    if not isinstance(convs, dict) or not convs:
+        raise ValueError("无对话数据")
+    return {
+        "version": _BACKUP_VERSION,
+        "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "active_conv_id": st.session_state.get("active_conv_id"),
+        "conversations": json.loads(json.dumps(convs, default=str)),
+    }
+
+
+def _apply_backup_payload(data: Dict[str, Any]) -> None:
+    if not isinstance(data, dict):
+        raise ValueError("备份格式无效")
+    if int(data.get("version", -1)) != _BACKUP_VERSION:
+        raise ValueError(f"不支持的备份版本：{data.get('version')!r}")
+    convs = data.get("conversations")
+    if not isinstance(convs, dict) or not convs:
+        raise ValueError("备份中无对话列表")
+    aid = data.get("active_conv_id")
+    if not isinstance(aid, str) or aid not in convs:
+        aid = next(iter(convs))
+    for _cid, _c in convs.items():
+        if not isinstance(_c, dict):
+            raise ValueError("对话条目格式错误")
+        _msgs = _c.get("messages")
+        if not isinstance(_msgs, list):
+            raise ValueError("备份中对话缺少 messages")
+    st.session_state["conversations"] = convs
+    st.session_state["active_conv_id"] = aid
+    st.session_state["_conv_switched"] = True
+    st.session_state["_run_stream_for"] = None
+    st.session_state["feedback_state"] = {}
+
+
 def _render_sidebar_chats() -> None:
     with st.sidebar:
-        st.markdown("##### 历史对话")
-        if st.button("➕ 新建对话", use_container_width=True, type="primary"):
+        st.markdown("##### 历史会话")
+        if st.button("➕ 新建会话", use_container_width=True, type="primary"):
             new_cid = str(uuid.uuid4())
             new_sid = str(uuid.uuid4())
             welcome = _welcome_messages()
+            convs = st.session_state["conversations"]
+            _ensure_session_numbers(convs)
+            sn = _next_session_no(convs)
             st.session_state["conversations"][new_cid] = {
-                "title": "新对话",
+                "session_no": sn,
+                "title": f"会话 {sn}",
                 "messages": welcome,
                 "session_id": new_sid,
                 "updated_at": time.time(),
@@ -691,7 +900,45 @@ def _render_sidebar_chats() -> None:
                     type="secondary",
                     key="sidebar_export_md",
                 )
-        st.caption("会话保存在本页；关闭或强刷标签页后会清空。")
+        with st.expander("备份与恢复", expanded=False):
+            st.caption("JSON 含全部会话，可跨设备迁移；恢复会覆盖当前页对话。")
+            try:
+                _bk = _backup_payload_from_session()
+                st.download_button(
+                    "导出全部对话备份 (.json)",
+                    data=json.dumps(_bk, ensure_ascii=False, indent=2).encode("utf-8"),
+                    file_name=f"课程助手_全部对话_{time.strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json",
+                    use_container_width=True,
+                    type="secondary",
+                    key="sidebar_export_json",
+                )
+            except ValueError:
+                pass
+            _rf = st.file_uploader(
+                "从备份恢复 (.json)",
+                type=["json"],
+                help="选择此前导出的 JSON，点下方按钮确认后将覆盖本页全部对话。",
+                key="sidebar_restore_json",
+            )
+            if _rf is not None:
+                st.caption(f"已选择：{_rf.name}")
+                if st.button(
+                    "确认用此文件恢复",
+                    key="sidebar_confirm_restore",
+                    type="primary",
+                ):
+                    try:
+                        _apply_backup_payload(
+                            json.loads(_rf.getvalue().decode("utf-8"))
+                        )
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"恢复失败：{e}")
+        st.caption(
+            "对话仅存于本会话：刷新或关闭页面后通常会清空。"
+            " 需要留存时请导出 .md 单条或 JSON 全量备份。"
+        )
 
 
 def main():
@@ -713,7 +960,8 @@ def main():
             _msgs = st.session_state["message"]
             st.session_state["conversations"] = {
                 _cid: {
-                    "title": _conv_title_from_messages(_msgs),
+                    "session_no": 1,
+                    "title": "会话 1",
                     "messages": _msgs,
                     "session_id": _sid,
                     "updated_at": time.time(),
@@ -727,7 +975,8 @@ def main():
             _msgs = _welcome_messages()
             st.session_state["conversations"] = {
                 _cid: {
-                    "title": "新对话",
+                    "session_no": 1,
+                    "title": "会话 1",
                     "messages": _msgs,
                     "session_id": _sid,
                     "updated_at": time.time(),
@@ -741,6 +990,8 @@ def main():
     if _ac not in st.session_state["conversations"]:
         _ac = next(iter(st.session_state["conversations"]))
         st.session_state["active_conv_id"] = _ac
+
+    _ensure_session_numbers(st.session_state["conversations"])
 
     _render_sidebar_chats()
 
@@ -792,26 +1043,53 @@ def main():
     show_debug = False
 
     with st.container():
-            # 仅最新一条助手消息展示反馈控件，避免长会话时控件数量爆炸拖慢渲染
-            last_feedback_msg_id: str | None = None
+            # 最新一条助手消息 id（用于「重新生成」仅作用于最后一条，与 ChatGPT 一致）
+            last_assistant_id: str | None = None
             for m in reversed(st.session_state["message"]):
                 if m.get("role") == "assistant" and m.get("id"):
-                    last_feedback_msg_id = str(m["id"])
+                    last_assistant_id = str(m["id"])
                     break
 
             for message in st.session_state["message"]:
                 with st.chat_message(message["role"]):
                     st.markdown(message["content"])
                     if message["role"] == "assistant" and message.get("content"):
+                        _meta = message.get("meta")
+                        _refs: List[Dict[str, Any]] = []
+                        if isinstance(_meta, dict):
+                            _r = _meta.get("source_refs")
+                            if isinstance(_r, list):
+                                _refs = [x for x in _r if isinstance(x, dict)]
+                        if _refs:
+                            with st.expander(
+                                f"来源（{len(_refs)}）",
+                                expanded=False,
+                            ):
+                                _render_source_refs_list(_refs)
                         msg_id = message.get("id")
-                        if msg_id and str(msg_id) == last_feedback_msg_id:
-                            fb = st.session_state["feedback_state"].get(msg_id, {})
+                        if msg_id:
+                            _msg_id_s = str(msg_id)
+                            fb = st.session_state["feedback_state"].get(
+                                msg_id, {}
+                            )
                             submitted = fb.get("submitted", False)
-                            if not submitted:
-                                with st.expander(
-                                    "对这条回答反馈（可选）", expanded=False
-                                ):
-                                    if st.button("👍 有帮助", key=f"fb_up_{msg_id}"):
+                            if submitted:
+                                st.caption("反馈已提交，感谢你的反馈。")
+                            else:
+                                ac1, ac2, ac3, ac4 = st.columns(
+                                    [1.4, 0.7, 0.7, 0.7]
+                                )
+                                with ac1:
+                                    _render_copy_button(
+                                        message.get("content") or "",
+                                        btn_key=f"copy_{_msg_id_s}",
+                                    )
+                                with ac2:
+                                    if st.button(
+                                        "👍",
+                                        key=f"fb_up_{_msg_id_s}",
+                                        help="有帮助",
+                                    ):
                                         ok, err = _submit_feedback(
                                             backend_url=backend_url,
                                             session_id=st.session_state["session_id"],
@@ -831,81 +1109,67 @@ def main():
                                             st.rerun()
                                         else:
                                             st.warning(f"反馈提交失败: {err}")
-
-                                    st.caption("若不满意，请选择原因后提交")
-                                    cr, cs = st.columns([5, 2])
-                                    down_reason = cr.selectbox(
-                                        "原因",
-                                        options=[
-                                            "答非所问",
-                                            "不准确",
-                                            "信息不足",
-                                            "太慢",
-                                            "其他",
-                                        ],
-                                        index=0,
-                                        key=f"fb_reason_{msg_id}",
-                                        label_visibility="collapsed",
-                                    )
-                                    if cs.button("提交差评", key=f"fb_down_{msg_id}"):
-                                        ok, err = _submit_feedback(
-                                            backend_url=backend_url,
-                                            session_id=st.session_state["session_id"],
-                                            question=message.get("question"),
-                                            answer=message.get("content", ""),
-                                            rating="down",
-                                            reason=down_reason,
-                                            meta=message.get("meta"),
+                                with ac3:
+                                    with st.popover("👎"):
+                                        st.caption("请选择原因后提交")
+                                        down_reason = st.selectbox(
+                                            "原因",
+                                            options=[
+                                                "答非所问",
+                                                "不准确",
+                                                "信息不足",
+                                                "太慢",
+                                                "其他",
+                                            ],
+                                            index=0,
+                                            key=f"fb_reason_{_msg_id_s}",
+                                            label_visibility="collapsed",
                                         )
-                                        if ok:
-                                            st.session_state["feedback_state"][
-                                                msg_id
-                                            ] = {
-                                                "submitted": True,
-                                                "rating": "down",
-                                                "reason": down_reason,
-                                            }
-                                            st.rerun()
-                                        else:
-                                            st.warning(f"反馈提交失败: {err}")
-                            else:
-                                st.caption("反馈已提交，感谢你的反馈。")
-                        elif msg_id:
-                            _ofb = st.session_state["feedback_state"].get(
-                                msg_id, {}
-                            )
-                            if _ofb.get("submitted"):
-                                st.caption("反馈已提交，感谢你的反馈。")
-
-            if (
-                len(st.session_state["message"]) == 1
-                and st.session_state["message"][0].get("role") == "assistant"
-                and not st.session_state.get("_run_stream_for")
-            ):
-                st.markdown(
-                    '<p class="neo-prompt-hint">试试这样问</p>',
-                    unsafe_allow_html=True,
-                )
-                _aid = st.session_state["active_conv_id"]
-                sc = st.columns(len(_STARTER_PROMPTS))
-                for i, q in enumerate(_STARTER_PROMPTS):
-                    if sc[i].button(
-                        q,
-                        key=f"starter_{_aid}_{i}",
-                        use_container_width=True,
-                        type="secondary",
-                    ):
-                        st.session_state["message"].append(
-                            {
-                                "id": str(uuid.uuid4()),
-                                "role": "user",
-                                "content": q,
-                            }
-                        )
-                        st.session_state["memory"].chat_memory.add_user_message(q)
-                        st.session_state["_run_stream_for"] = q
-                        _touch_active_conversation()
-                        st.rerun()
+                                        if st.button(
+                                            "提交差评",
+                                            key=f"fb_down_{_msg_id_s}",
+                                        ):
+                                            ok, err = _submit_feedback(
+                                                backend_url=backend_url,
+                                                session_id=st.session_state["session_id"],
+                                                question=message.get("question"),
+                                                answer=message.get("content", ""),
+                                                rating="down",
+                                                reason=down_reason,
+                                                meta=message.get("meta"),
+                                            )
+                                            if ok:
+                                                st.session_state["feedback_state"][
+                                                    msg_id
+                                                ] = {
+                                                    "submitted": True,
+                                                    "rating": "down",
+                                                    "reason": down_reason,
+                                                }
+                                                st.rerun()
+                                            else:
+                                                st.warning(
+                                                    f"反馈提交失败: {err}"
+                                                )
+                                with ac4:
+                                    if (
+                                        last_assistant_id
+                                        and _msg_id_s == last_assistant_id
+                                        and not st.session_state.get(
+                                            "_run_stream_for"
+                                        )
+                                    ):
+                                        if st.button(
+                                            "↻",
+                                            key=f"regen_{_msg_id_s}",
+                                            help="重新生成",
+                                        ):
+                                            if _regenerate_assistant_message(
+                                                _msg_id_s,
+                                                st.session_state["message"],
+                                            ):
+                                                _touch_active_conversation()
+                                                st.rerun()
 
             pending = st.session_state.get("_run_stream_for")
             if pending:
@@ -956,7 +1220,8 @@ def main():
                                         _end_thinking()
                                         with context_placeholder.container():
                                             with st.expander(
-                                                "相关段落", expanded=False
+                                                "相关摘录",
+                                                expanded=False,
                                             ):
                                                 context_area = st.empty()
                                                 context_area.markdown(
@@ -1028,25 +1293,20 @@ def main():
                                 unsafe_allow_html=True,
                             )
                         source_refs = route_meta.get("source_refs") or []
+                        if isinstance(source_refs, list):
+                            source_refs = [x for x in source_refs if isinstance(x, dict)]
+                        else:
+                            source_refs = []
                         if source_refs:
-                            with st.container(border=True):
-                                st.markdown("#### 来源验证")
-                                for r in source_refs:
-                                    label = r.get("label", "来源")
-                                    hint = r.get("hint", "")
-                                    url = r.get("url", "")
-                                    if url:
-                                        st.markdown(
-                                            f"- [{label}]({url})  \n  {hint}"
-                                        )
-                                    else:
-                                        st.markdown(f"- {label}  \n  {hint}")
+                            with st.expander(
+                                f"来源（{len(source_refs)}）",
+                                expanded=False,
+                            ):
+                                _render_source_refs_list(source_refs)
                         if route_meta.get("degraded"):
                             suggestions = route_meta.get("suggestions") or []
                             if suggestions:
-                                with st.container(border=True):
-                                    st.markdown("#### 当前为降级回答")
-                                    st.caption("建议这样提问以触发课件检索：")
+                                with st.expander("参考问法", expanded=False):
                                     for s in suggestions[:3]:
                                         st.markdown(f"- {s}")
 
@@ -1074,7 +1334,7 @@ def main():
                 st.session_state["_run_stream_for"] = None
                 st.rerun()
 
-    prompt = st.chat_input("输入问题…")
+    prompt = st.chat_input("有问题，尽管问…")
     if prompt:
         user_msg_id = str(uuid.uuid4())
         st.session_state["message"].append(
